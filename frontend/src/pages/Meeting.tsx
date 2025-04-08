@@ -288,7 +288,7 @@ const Meeting: React.FC = () => {
     
     const peer = new Peer({
       initiator: true,
-      trickle: true, // Enable trickle ICE for faster connections
+      trickle: false, // Disable trickle ICE for more reliable connections
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -384,15 +384,6 @@ const Meeting: React.FC = () => {
 
     peer.on('track', (track, stream) => {
       console.log('Received track as initiator from:', userToSignal, 'Track kind:', track.kind, 'Track ID:', track.id);
-      
-      // For debugging, log the track's constraints and settings
-      console.log('Track constraints:', track.getConstraints());
-      console.log('Track settings:', track.getSettings());
-      
-      // Listen for track mute/unmute events
-      track.onmute = () => console.log(`Track ${track.id} muted`);
-      track.onunmute = () => console.log(`Track ${track.id} unmuted`);
-      track.onended = () => console.log(`Track ${track.id} ended`);
     });
 
     peer.on('error', (err) => {
@@ -439,7 +430,7 @@ const Meeting: React.FC = () => {
     
     const peer = new Peer({
       initiator: false,
-      trickle: true, // Enable trickle ICE for faster connections
+      trickle: false, // Disable trickle ICE for more reliable connections
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -477,8 +468,11 @@ const Meeting: React.FC = () => {
       }
     }
 
+    // Signal the peer with the incoming signal
+    peer.signal(incomingSignal);
+
     // Handle peer events
-    peer.on('signal', (data) => {
+    peer.on('signal', data => {
       console.log('Generated signal as receiver for:', callerID);
       socket?.emit('returning-signal', { signal: data, callerID });
     });
@@ -530,15 +524,6 @@ const Meeting: React.FC = () => {
 
     peer.on('track', (track, stream) => {
       console.log('Received track as receiver from:', callerID, 'Track kind:', track.kind, 'Track ID:', track.id);
-      
-      // For debugging, log the track's constraints and settings
-      console.log('Track constraints:', track.getConstraints());
-      console.log('Track settings:', track.getSettings());
-      
-      // Listen for track mute/unmute events
-      track.onmute = () => console.log(`Track ${track.id} muted`);
-      track.onunmute = () => console.log(`Track ${track.id} unmuted`);
-      track.onended = () => console.log(`Track ${track.id} ended`);
     });
 
     peer.on('error', (err) => {
@@ -548,13 +533,6 @@ const Meeting: React.FC = () => {
     peer.on('close', () => {
       console.log('Peer connection closed with:', callerID);
     });
-
-    // Signal the peer with the incoming signal
-    try {
-      peer.signal(incomingSignal);
-    } catch (err) {
-      console.error('Error signaling peer:', err);
-    }
 
     return peer;
   }, [socket]);
@@ -569,10 +547,7 @@ const Meeting: React.FC = () => {
       
       // Filter out our own ID
       const filteredUsers = users.filter(user => user.userId !== socket.id);
-      
-      // Clear existing peers first to prevent duplicates
-      setPeers([]);
-      peersRef.current = [];
+      console.log('Filtered users (excluding self):', filteredUsers);
       
       // Connect to each user
       filteredUsers.forEach(user => {
@@ -616,27 +591,31 @@ const Meeting: React.FC = () => {
     const handleUserJoined = (payload: { signal: any; callerID: string; userName: string }) => {
       console.log('User joined with signal:', payload.callerID, payload.userName);
       
-      // Check if we already have this user in our peers
-      const existingPeer = peersRef.current.find(p => p.peerId === payload.callerID);
-      if (existingPeer) {
-        console.log('User already in peers list, updating signal:', payload.callerID);
-        existingPeer.peer.signal(payload.signal);
-        return;
-      }
-      
-      const peer = addPeer(payload.signal, payload.callerID, stream);
-      
-      peersRef.current.push({
-        peerId: payload.callerID,
-        peer,
-        userName: payload.userName,
-      });
+      try {
+        // Check if we already have this user in our peers
+        const existingPeer = peersRef.current.find(p => p.peerId === payload.callerID);
+        if (existingPeer) {
+          console.log('User already in peers list, updating signal:', payload.callerID);
+          existingPeer.peer.signal(payload.signal);
+          return;
+        }
+        
+        const peer = addPeer(payload.signal, payload.callerID, stream);
+        
+        peersRef.current.push({
+          peerId: payload.callerID,
+          peer,
+          userName: payload.userName,
+        });
 
-      setPeers(users => {
-        // First remove any existing peer with the same ID to prevent duplicates
-        const filteredUsers = users.filter(p => p.peerId !== payload.callerID);
-        return [...filteredUsers, { peerId: payload.callerID, peer, userName: payload.userName }];
-      });
+        setPeers(users => {
+          // First remove any existing peer with the same ID to prevent duplicates
+          const filteredUsers = users.filter(p => p.peerId !== payload.callerID);
+          return [...filteredUsers, { peerId: payload.callerID, peer, userName: payload.userName }];
+        });
+      } catch (err) {
+        console.error('Error handling user joined signal:', err);
+      }
     };
 
     socket.on('user-joined', handleUserJoined);
@@ -730,64 +709,26 @@ const Meeting: React.FC = () => {
     }
   };
 
-  // Render a video for a peer
+  // Render a peer's video
   const renderPeerVideo = (peer: PeerConnection) => {
-    const hasVideo = peer.stream && 
-                    peer.stream.getVideoTracks().length > 0 && 
-                    peer.stream.getVideoTracks()[0].enabled;
-                    
+    console.log('Rendering video for peer:', peer.peerId, 'Has stream:', !!peer.stream);
+    
     return (
-      <Box
-        key={peer.peerId}
-        className="video-container"
-        sx={{
-          position: 'relative',
-          width: '100%',
-          height: '100%',
-          borderRadius: '8px',
-          overflow: 'hidden',
-          backgroundColor: 'rgba(0, 0, 0, 0.2)',
-        }}
-      >
+      <div key={peer.peerId} className="video-container">
         <video
-          key={`video-${peer.peerId}-${peer.stream?.id || 'no-stream'}`}
           ref={(element) => setPeerVideoRef(peer.peerId, element)}
           autoPlay
           playsInline
           muted={false}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-            display: 'block',
-          }}
+          className="peer-video"
         />
-        
-        {/* User info overlay */}
-        <Box
-          className="user-info"
-          sx={{
-            position: 'absolute',
-            bottom: '10px',
-            left: '10px',
-            padding: '5px 10px',
-            backgroundColor: 'rgba(0, 0, 0, 0.5)',
-            color: 'white',
-            borderRadius: '4px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '5px',
-            zIndex: 2,
-          }}
-        >
-          {!hasVideo && (
-            <Avatar sx={{ width: 24, height: 24, backgroundColor: 'primary.main', fontSize: '12px' }}>
-              {(peer.userName || 'Guest').charAt(0).toUpperCase()}
-            </Avatar>
-          )}
-          <Typography variant="body2">{peer.userName || 'Guest'}</Typography>
-        </Box>
-      </Box>
+        <div className="user-label">
+          <div className="user-avatar">
+            {peer.userName ? peer.userName.charAt(0).toUpperCase() : '?'}
+          </div>
+          <div className="user-name">{peer.userName || 'Guest'}</div>
+        </div>
+      </div>
     );
   };
 

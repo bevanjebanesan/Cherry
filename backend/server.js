@@ -206,8 +206,8 @@ io.on('connection', (socket) => {
       message.timestamp = new Date();
     }
     
-    // Broadcast to ALL clients in the room (including sender for consistency)
-    io.to(meetingId).emit('receive-message', message);
+    // Broadcast the message to all clients in the room
+    io.in(meetingId).emit('receive-message', message);
     
     // Store message in meeting history
     if (meetings[meetingId]) {
