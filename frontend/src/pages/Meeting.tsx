@@ -186,12 +186,12 @@ const Meeting: React.FC = () => {
       console.log('Joined room:', meetingId, 'as', userName, 'with ID:', newSocket.id);
 
       // Handle existing users in the room
-      newSocket.on('get-users', (users: { userId: string; userName: string }[]) => {
+      newSocket.on('get-users', (users: Array<{id: string, userName: string}>) => {
         console.log('Existing users in room:', users);
         // Connect to each existing user
         users.forEach(user => {
-          if (user.userId !== newSocket.id) {
-            connectToNewUser(user.userId, stream, user.userName);
+          if (user.id !== newSocket.id) {
+            connectToNewUser(user.id, stream, user.userName);
           }
         });
       });
@@ -282,13 +282,36 @@ const Meeting: React.FC = () => {
       });
     };
 
+  // Create a peer connection to a new user
+  const connectToNewUser = useCallback((userId: string, stream: MediaStream | null, remoteUserName: string) => {
+    console.log('Connecting to new user:', userId, 'Name:', remoteUserName);
+    
+    // Check if we already have a connection to this peer
+    if (peersRef.current.some(p => p.peerId === userId)) {
+      console.log('Already connected to this peer, skipping');
+      return;
+    }
+    
+    // Create peer even if we don't have a stream
+    const peer = createPeer(userId, stream);
+    
+    peersRef.current.push({
+      peerId: userId,
+      peer,
+      userName: remoteUserName,
+    });
+
+    // Add peer to state
+    setPeers(users => [...users, { peerId: userId, peer, userName: remoteUserName }]);
+  }, []);
+
   // Create a peer connection as the initiator
   const createPeer = useCallback((userToSignal: string, stream: MediaStream | null) => {
     console.log('Creating peer as initiator for:', userToSignal);
     
     const peer = new Peer({
       initiator: true,
-      trickle: false, // Disable trickle ICE for more reliable connections
+      trickle: true, // Enable trickle ICE for faster connections
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -344,13 +367,12 @@ const Meeting: React.FC = () => {
     peer.on('stream', (currentStream) => {
       console.log('Received stream as initiator from:', userToSignal, 'Stream ID:', currentStream.id, 'Tracks:', currentStream.getTracks().length);
       
-      // Store the stream in the peer object
+      // Update the peer object with the stream
       const peerObj = peersRef.current.find(p => p.peerId === userToSignal);
       if (peerObj) {
         peerObj.stream = currentStream;
       }
       
-      // Update the peers state with the new stream
       setPeers(prevPeers => 
         prevPeers.map(p => 
           p.peerId === userToSignal 
@@ -363,27 +385,14 @@ const Meeting: React.FC = () => {
       if (peerVideos.current[userToSignal]) {
         console.log('Setting stream to existing video element for peer:', userToSignal);
         peerVideos.current[userToSignal].srcObject = currentStream;
-        
-        // Force play the video
-        const playPromise = peerVideos.current[userToSignal].play();
-        if (playPromise !== undefined) {
-          playPromise.catch(err => {
-            console.error(`Error playing video for ${userToSignal}:`, err);
-            // Try again after a short delay
-            setTimeout(() => {
-              if (peerVideos.current[userToSignal]) {
-                peerVideos.current[userToSignal].play().catch(e => console.error(`Retry play failed for ${userToSignal}:`, e));
-              }
-            }, 1000);
-          });
-        }
-      } else {
-        console.warn('Video element not found for peer:', userToSignal);
+        peerVideos.current[userToSignal].play().catch(err => {
+          console.error(`Error playing video for ${userToSignal}:`, err);
+        });
       }
     });
 
     peer.on('track', (track, stream) => {
-      console.log('Received track as initiator from:', userToSignal, 'Track kind:', track.kind, 'Track ID:', track.id);
+      console.log('Received track as initiator from:', userToSignal, 'Track kind:', track.kind);
     });
 
     peer.on('error', (err) => {
@@ -397,40 +406,13 @@ const Meeting: React.FC = () => {
     return peer;
   }, [socket, userName]);
 
-  // Create a peer connection to a new user
-  const connectToNewUser = useCallback((userId: string, stream: MediaStream | null, remoteUserName: string) => {
-    console.log('Connecting to new user:', userId, 'Name:', remoteUserName);
-    
-    // Check if we already have a connection to this peer
-    if (peersRef.current.some(p => p.peerId === userId)) {
-      console.log('Already connected to this peer, skipping connection');
-      return;
-    }
-    
-    // Create peer even if we don't have a stream
-    const peer = createPeer(userId, stream);
-    
-    peersRef.current.push({
-      peerId: userId,
-      peer,
-      userName: remoteUserName,
-    });
-
-    // Add peer to state
-    setPeers(users => {
-      // First remove any existing peer with the same ID to prevent duplicates
-      const filteredUsers = users.filter(p => p.peerId !== userId);
-      return [...filteredUsers, { peerId: userId, peer, userName: remoteUserName }];
-    });
-  }, [createPeer]);
-
   // Add a peer connection as the receiver
   const addPeer = useCallback((incomingSignal: any, callerID: string, stream: MediaStream | null) => {
     console.log('Adding peer as receiver for:', callerID);
     
     const peer = new Peer({
       initiator: false,
-      trickle: false, // Disable trickle ICE for more reliable connections
+      trickle: true, // Enable trickle ICE for faster connections
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -468,11 +450,8 @@ const Meeting: React.FC = () => {
       }
     }
 
-    // Signal the peer with the incoming signal
-    peer.signal(incomingSignal);
-
     // Handle peer events
-    peer.on('signal', data => {
+    peer.on('signal', (data) => {
       console.log('Generated signal as receiver for:', callerID);
       socket?.emit('returning-signal', { signal: data, callerID });
     });
@@ -484,13 +463,12 @@ const Meeting: React.FC = () => {
     peer.on('stream', (currentStream) => {
       console.log('Received stream as receiver from:', callerID, 'Stream ID:', currentStream.id, 'Tracks:', currentStream.getTracks().length);
       
-      // Store the stream in the peer object
+      // Update the peer object with the stream
       const peerObj = peersRef.current.find(p => p.peerId === callerID);
       if (peerObj) {
         peerObj.stream = currentStream;
       }
       
-      // Update the peers state with the new stream
       setPeers(prevPeers => 
         prevPeers.map(p => 
           p.peerId === callerID 
@@ -503,27 +481,14 @@ const Meeting: React.FC = () => {
       if (peerVideos.current[callerID]) {
         console.log('Setting stream to existing video element for peer:', callerID);
         peerVideos.current[callerID].srcObject = currentStream;
-        
-        // Force play the video
-        const playPromise = peerVideos.current[callerID].play();
-        if (playPromise !== undefined) {
-          playPromise.catch(err => {
-            console.error(`Error playing video for ${callerID}:`, err);
-            // Try again after a short delay
-            setTimeout(() => {
-              if (peerVideos.current[callerID]) {
-                peerVideos.current[callerID].play().catch(e => console.error(`Retry play failed for ${callerID}:`, e));
-              }
-            }, 1000);
-          });
-        }
-      } else {
-        console.warn('Video element not found for peer:', callerID);
+        peerVideos.current[callerID].play().catch(err => {
+          console.error(`Error playing video for ${callerID}:`, err);
+        });
       }
     });
 
     peer.on('track', (track, stream) => {
-      console.log('Received track as receiver from:', callerID, 'Track kind:', track.kind, 'Track ID:', track.id);
+      console.log('Received track as receiver from:', callerID, 'Track kind:', track.kind);
     });
 
     peer.on('error', (err) => {
@@ -534,6 +499,13 @@ const Meeting: React.FC = () => {
       console.log('Peer connection closed with:', callerID);
     });
 
+    // Signal the peer with the incoming signal
+    try {
+      peer.signal(incomingSignal);
+    } catch (err) {
+      console.error('Error signaling peer:', err);
+    }
+
     return peer;
   }, [socket]);
 
@@ -541,118 +513,39 @@ const Meeting: React.FC = () => {
   useEffect(() => {
     if (!socket) return;
 
-    // Handle incoming user list
-    const handleGetUsers = (users: { userId: string; userName: string }[]) => {
-      console.log('Received user list:', users);
+    // Handle when a new user joins the meeting
+    const handleUserJoined = ({ signal, callerID, userName: callerName }: { signal: any, callerID: string, userName: string }) => {
+      console.log('User joined:', callerID, callerName);
       
-      // Filter out our own ID
-      const filteredUsers = users.filter(user => user.userId !== socket.id);
-      console.log('Filtered users (excluding self):', filteredUsers);
+      // Create a peer connection to the new user
+      const peer = addPeer(signal, callerID, stream);
       
-      // Connect to each user
-      filteredUsers.forEach(user => {
-        connectToNewUser(user.userId, stream, user.userName);
+      peersRef.current.push({
+        peerId: callerID,
+        peer,
+        userName: callerName,
       });
+
+      // Add peer to state
+      setPeers(prevPeers => [...prevPeers, { peerId: callerID, peer, userName: callerName }]);
     };
 
-    socket.on('get-users', handleGetUsers);
-
-    return () => {
-      socket.off('get-users', handleGetUsers);
-    };
-  }, [socket, connectToNewUser, stream]);
-
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleUserConnected = (userId: string, userName: string) => {
-      console.log('User connected:', userId, userName);
-      
-      // Check if we already have this user in our peers
-      const existingPeer = peersRef.current.find(p => p.peerId === userId);
-      if (existingPeer) {
-        console.log('User already in peers list, not creating new connection:', userId);
-        return;
-      }
-      
-      connectToNewUser(userId, stream, userName);
-    };
-
-    socket.on('user-connected', handleUserConnected);
-
-    return () => {
-      socket.off('user-connected', handleUserConnected);
-    };
-  }, [socket, connectToNewUser, stream]);
-
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleUserJoined = (payload: { signal: any; callerID: string; userName: string }) => {
-      console.log('User joined with signal:', payload.callerID, payload.userName);
-      
-      try {
-        // Check if we already have this user in our peers
-        const existingPeer = peersRef.current.find(p => p.peerId === payload.callerID);
-        if (existingPeer) {
-          console.log('User already in peers list, updating signal:', payload.callerID);
-          existingPeer.peer.signal(payload.signal);
-          return;
-        }
-        
-        const peer = addPeer(payload.signal, payload.callerID, stream);
-        
-        peersRef.current.push({
-          peerId: payload.callerID,
-          peer,
-          userName: payload.userName,
-        });
-
-        setPeers(users => {
-          // First remove any existing peer with the same ID to prevent duplicates
-          const filteredUsers = users.filter(p => p.peerId !== payload.callerID);
-          return [...filteredUsers, { peerId: payload.callerID, peer, userName: payload.userName }];
-        });
-      } catch (err) {
-        console.error('Error handling user joined signal:', err);
-      }
-    };
-
-    socket.on('user-joined', handleUserJoined);
-
-    return () => {
-      socket.off('user-joined', handleUserJoined);
-    };
-  }, [socket, addPeer, stream]);
-
-  useEffect(() => {
-    if (!socket) return;
-
-    const handleReceivingReturnedSignal = (payload: { signal: any; id: string }) => {
-      console.log('Received returned signal from:', payload.id);
-      
-      const item = peersRef.current.find(p => p.peerId === payload.id);
+    // Handle when a user returns a signal
+    const handleReceivingReturnedSignal = ({ signal, id }: { signal: any, id: string }) => {
+      console.log('Received returned signal from:', id);
+      const item = peersRef.current.find(p => p.peerId === id);
       if (item) {
         try {
-          item.peer.signal(payload.signal);
+          item.peer.signal(signal);
         } catch (err) {
           console.error('Error signaling peer:', err);
         }
       } else {
-        console.warn('Could not find peer to signal:', payload.id);
+        console.warn('Could not find peer to signal:', id);
       }
     };
 
-    socket.on('receiving-returned-signal', handleReceivingReturnedSignal);
-
-    return () => {
-      socket.off('receiving-returned-signal', handleReceivingReturnedSignal);
-    };
-  }, [socket]);
-
-  useEffect(() => {
-    if (!socket) return;
-
+    // Handle when a user disconnects
     const handleUserDisconnected = (userId: string) => {
       console.log('User disconnected:', userId);
       
@@ -663,23 +556,40 @@ const Meeting: React.FC = () => {
       setPeers(prevPeers => prevPeers.filter(p => p.peerId !== userId));
       
       // Remove the peer's video element
-      if (peerVideos.current[userId]) {
-        console.log('Removing video element for disconnected peer:', userId);
-        delete peerVideos.current[userId];
-      }
+      delete peerVideos.current[userId];
     };
 
+    // Handle get users event
+    const handleGetUsers = (users: Array<{ userId: string, userName: string }>) => {
+      console.log('Got users:', users);
+      
+      // Connect to each user
+      users.forEach(user => {
+        if (user.userId !== socket.id) {
+          console.log('Connecting to existing user:', user.userId, user.userName);
+          connectToNewUser(user.userId, stream, user.userName);
+        }
+      });
+    };
+
+    // Register event handlers
+    socket.on('user-joined', handleUserJoined);
+    socket.on('receiving-returned-signal', handleReceivingReturnedSignal);
     socket.on('user-disconnected', handleUserDisconnected);
+    socket.on('get-users', handleGetUsers);
 
+    // Clean up event handlers
     return () => {
+      socket.off('user-joined', handleUserJoined);
+      socket.off('receiving-returned-signal', handleReceivingReturnedSignal);
       socket.off('user-disconnected', handleUserDisconnected);
+      socket.off('get-users', handleGetUsers);
     };
-  }, [socket]);
+  }, [socket, stream, addPeer, connectToNewUser]);
 
   // Set video reference for a peer
   const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
     if (element) {
-      console.log(`Setting video ref for peer ${peerId}`, element);
       peerVideos.current[peerId] = element;
       
       // Find the peer
@@ -687,48 +597,68 @@ const Meeting: React.FC = () => {
       
       // If we have a stream for this peer, set it to the video element
       if (peer && peer.stream) {
-        console.log('Setting stream to video element for peer:', peerId, 'Stream ID:', peer.stream.id);
+        console.log('Setting stream to video element for peer:', peerId);
         element.srcObject = peer.stream;
-        
-        // Force play the video
-        const playPromise = element.play();
-        if (playPromise !== undefined) {
-          playPromise.catch(err => {
-            console.error(`Error playing video for ${peerId}:`, err);
-            // Try again after a short delay
-            setTimeout(() => {
-              if (peerVideos.current[peerId]) {
-                peerVideos.current[peerId].play().catch(e => console.error(`Retry play failed for ${peerId}:`, e));
-              }
-            }, 1000);
-          });
-        }
-      } else {
-        console.log(`No stream available yet for peer ${peerId}`);
+        element.play().catch(err => {
+          console.error(`Error playing video for ${peerId}:`, err);
+        });
       }
     }
   };
 
-  // Render a peer's video
+  // Render a video for a peer
   const renderPeerVideo = (peer: PeerConnection) => {
-    console.log('Rendering video for peer:', peer.peerId, 'Has stream:', !!peer.stream);
-    
     return (
-      <div key={peer.peerId} className="video-container">
+      <Box
+        key={peer.peerId}
+        className="video-container"
+        sx={{
+          position: 'relative',
+          width: '100%',
+          height: '100%',
+          borderRadius: '8px',
+          overflow: 'hidden',
+          backgroundColor: 'rgba(0, 0, 0, 0.2)',
+        }}
+      >
         <video
           ref={(element) => setPeerVideoRef(peer.peerId, element)}
           autoPlay
           playsInline
           muted={false}
-          className="peer-video"
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            display: 'block',
+          }}
         />
-        <div className="user-label">
-          <div className="user-avatar">
-            {peer.userName ? peer.userName.charAt(0).toUpperCase() : '?'}
-          </div>
-          <div className="user-name">{peer.userName || 'Guest'}</div>
-        </div>
-      </div>
+        
+        {/* User info overlay */}
+        <Box
+          className="user-info"
+          sx={{
+            position: 'absolute',
+            bottom: '10px',
+            left: '10px',
+            padding: '5px 10px',
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            color: 'white',
+            borderRadius: '4px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+            zIndex: 2,
+          }}
+        >
+          {!peer.stream || peer.stream.getVideoTracks().length === 0 || !peer.stream.getVideoTracks()[0].enabled ? (
+            <Avatar sx={{ width: 24, height: 24, backgroundColor: 'primary.main', fontSize: '12px' }}>
+              {(peer.userName || 'Guest').charAt(0).toUpperCase()}
+            </Avatar>
+          ) : null}
+          <Typography variant="body2">{peer.userName || 'Guest'}</Typography>
+        </Box>
+      </Box>
     );
   };
 

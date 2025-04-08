@@ -45,7 +45,7 @@ const io = new Server(server, {
 
 // In-memory storage for meetings
 const meetings = {};
-const users = [];
+const users = {};
 
 // Socket.io event handlers
 io.on('connection', (socket) => {
@@ -53,148 +53,148 @@ io.on('connection', (socket) => {
   
   // Join a meeting room
   socket.on('join-room', async (meetingId, userId, userName) => {
-    console.log(`User ${userName} (${socket.id}) joining meeting ${meetingId}`);
-    
-    // Store socket meeting info for disconnect handling
-    socket.meetingId = meetingId;
-    socket.userName = userName;
+    console.log(`User ${userName} (${userId}) joining meeting ${meetingId}`);
     
     try {
-      // Check if this user is already in the meeting (reconnection case)
-      const existingUserIndex = users.findIndex(u => u.userId === socket.id);
-      if (existingUserIndex !== -1) {
-        console.log(`User ${userName} (${socket.id}) is reconnecting to meeting ${meetingId}`);
-        // Update the existing user entry
-        users[existingUserIndex].meetingId = meetingId;
-        users[existingUserIndex].userName = userName;
-      } else {
-        // Add new user to the users array
-        users.push({
-          userId: socket.id,
-          userName: userName,
-          meetingId: meetingId
-        });
-        console.log(`Added new user ${userName} (${socket.id}) to users array`);
+      // Create a guest user in MongoDB
+      const guestUser = new User({
+        name: userName,
+        email: `guest-${uuidv4()}@cherry.app`,
+        password: uuidv4(),
+        isGuest: true
+      });
+      
+      // Save the guest user to MongoDB
+      const savedUser = await guestUser.save();
+      
+      // Try to find the meeting in MongoDB
+      let meeting = await Meeting.findOne({ meetingId });
+      
+      if (meeting) {
+        // Add the user to the meeting participants
+        meeting.participants.push(savedUser._id);
+        await meeting.save();
+        console.log(`Added ${userName} to MongoDB meeting ${meetingId}`);
       }
+      
+      // Also update in-memory data for backward compatibility
+      if (!meetings[meetingId]) {
+        meetings[meetingId] = {
+          id: meetingId,
+          participants: {},
+          messages: [],
+        };
+      }
+      
+      // Add the participant to the in-memory meeting
+      meetings[meetingId].participants[socket.id] = {
+        id: socket.id,
+        userName,
+        mongoUserId: savedUser._id
+      };
+      
+      // Store user info
+      users[socket.id] = {
+        userId: socket.id,
+        userName: userName,
+        meetingId: meetingId
+      };
       
       // Join the socket room
       socket.join(meetingId);
-      
-      // Create or update meeting in memory
-      if (!meetings[meetingId]) {
-        meetings[meetingId] = {
-          meetingId,
-          participants: [],
-          messages: [],
-          createdAt: new Date()
-        };
-      }
-      
-      // Check if user is already in the participants list
-      const participantExists = meetings[meetingId].participants.some(p => p.userId === socket.id);
-      
-      if (!participantExists) {
-        // Add user to meeting participants
-        meetings[meetingId].participants.push({
-          userId: socket.id,
-          userName: userName,
-          joinedAt: new Date()
-        });
-      }
-      
-      // Get all users in this meeting
-      const usersInThisRoom = users.filter(user => user.meetingId === meetingId);
-      
-      // Emit to the client who just joined
-      socket.emit('get-users', usersInThisRoom);
-      
-      // Notify other clients in the room
-      socket.to(meetingId).emit('user-connected', socket.id, userName);
-      
-      console.log(`User ${userName} joined meeting ${meetingId} successfully`);
-    } catch (error) {
-      console.error('Error joining room:', error);
-      
-      // Fallback to in-memory only
-      socket.join(meetingId);
-      
-      // Add user to users array if not already there
-      if (!users.some(u => u.userId === socket.id)) {
-        users.push({
-          userId: socket.id,
-          userName: userName,
-          meetingId: meetingId
-        });
-      }
-      
-      // Create meeting if it doesn't exist
-      if (!meetings[meetingId]) {
-        meetings[meetingId] = {
-          meetingId,
-          participants: [],
-          messages: [],
-          createdAt: new Date()
-        };
-      }
-      
-      // Add user to meeting participants if not already there
-      if (!meetings[meetingId].participants.some(p => p.userId === socket.id)) {
-        meetings[meetingId].participants.push({
-          userId: socket.id,
-          userName: userName,
-          joinedAt: new Date()
-        });
-      }
+      socket.meetingId = meetingId;
+      socket.userName = userName;
       
       // Get all users in this room
-      const usersInThisRoom = users.filter(user => user.meetingId === meetingId);
+      const usersInThisRoom = [];
+      for (let id in meetings[meetingId].participants) {
+        if (id !== socket.id) {
+          usersInThisRoom.push({
+            id,
+            userName: meetings[meetingId].participants[id].userName
+          });
+        }
+      }
       
-      // Emit to the client who just joined
+      // Send the list of existing users to the new user
       socket.emit('get-users', usersInThisRoom);
       
-      // Notify other clients in the room
+      // Notify others that a new user has connected
+      socket.to(meetingId).emit('user-connected', socket.id, userName);
+      
+      console.log(`User ${userName} joined meeting ${meetingId}`);
+    } catch (error) {
+      console.error('Error joining meeting:', error);
+      
+      // Fallback to in-memory only if MongoDB fails
+      if (!meetings[meetingId]) {
+        meetings[meetingId] = {
+          id: meetingId,
+          participants: {},
+          messages: [],
+        };
+      }
+      
+      // Add the participant to the in-memory meeting
+      meetings[meetingId].participants[socket.id] = {
+        id: socket.id,
+        userName,
+      };
+      
+      // Store user info
+      users[socket.id] = {
+        userId: socket.id,
+        userName: userName,
+        meetingId: meetingId
+      };
+      
+      // Join the socket room
+      socket.join(meetingId);
+      socket.meetingId = meetingId;
+      socket.userName = userName;
+      
+      // Get all users in this room
+      const usersInThisRoom = [];
+      for (let id in meetings[meetingId].participants) {
+        if (id !== socket.id) {
+          usersInThisRoom.push({
+            id,
+            userName: meetings[meetingId].participants[id].userName
+          });
+        }
+      }
+      
+      // Send the list of existing users to the new user
+      socket.emit('get-users', usersInThisRoom);
+      
+      // Notify others that a new user has connected
       socket.to(meetingId).emit('user-connected', socket.id, userName);
       
       console.log(`Fallback: User ${userName} joined meeting ${meetingId} (in-memory only)`);
     }
   });
   
-  // Handle sending signals between peers
   socket.on('sending-signal', (payload) => {
     const { userToSignal, callerID, signal, userName } = payload;
-    console.log(`User ${callerID} (${userName}) is sending signal to ${userToSignal}`);
+    console.log(`User ${callerID} (${userName}) sending signal to ${userToSignal}`);
     
-    // Find the user to signal
-    const user = users.find(user => user.userId === userToSignal);
-    
-    if (user) {
-      io.to(userToSignal).emit('user-joined', { 
-        signal, 
-        callerID, 
-        userName 
-      });
-      console.log(`Signal sent to ${userToSignal} successfully`);
+    // Make sure the user to signal exists
+    if (io.sockets.sockets.has(userToSignal)) {
+      io.to(userToSignal).emit('user-joined', { signal, callerID, userName });
     } else {
-      console.warn(`Cannot send signal to ${userToSignal} - user not found`);
+      console.log(`User ${userToSignal} not found, cannot send signal`);
     }
   });
-
-  // Handle returning signals between peers
+  
   socket.on('returning-signal', (payload) => {
     const { signal, callerID } = payload;
-    console.log(`User ${socket.id} is returning signal to ${callerID}`);
+    console.log(`User ${socket.id} returning signal to ${callerID}`);
     
-    // Find the caller
-    const caller = users.find(user => user.userId === callerID);
-    
-    if (caller) {
-      io.to(callerID).emit('receiving-returned-signal', { 
-        signal, 
-        id: socket.id 
-      });
-      console.log(`Return signal sent to ${callerID} successfully`);
+    // Make sure the caller ID exists
+    if (io.sockets.sockets.has(callerID)) {
+      io.to(callerID).emit('receiving-returned-signal', { signal, id: socket.id });
     } else {
-      console.warn(`Cannot return signal to ${callerID} - user not found`);
+      console.log(`User ${callerID} not found, cannot return signal`);
     }
   });
   
@@ -206,8 +206,8 @@ io.on('connection', (socket) => {
       message.timestamp = new Date();
     }
     
-    // Broadcast the message to all clients in the room
-    io.in(meetingId).emit('receive-message', message);
+    // Broadcast to ALL clients in the room (including sender for consistency)
+    io.to(meetingId).emit('receive-message', message);
     
     // Store message in meeting history
     if (meetings[meetingId]) {
@@ -216,7 +216,7 @@ io.on('connection', (socket) => {
   });
   
   socket.on('send-transcription', ({ meetingId, text }) => {
-    const user = users.find(user => user.userId === socket.id);
+    const user = users[socket.id];
     if (user && meetings[meetingId]) {
       console.log(`Transcription in room ${meetingId} from ${user.userName}: ${text}`);
       io.to(meetingId).emit('receive-transcription', { 
@@ -227,43 +227,49 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Handle user disconnection
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+  socket.on('disconnect', async () => {
+    console.log(`User disconnected: ${socket.id}`);
     
-    // Find the user
-    const userIndex = users.findIndex(user => user.userId === socket.id);
-    
-    if (userIndex !== -1) {
-      const user = users[userIndex];
-      const meetingId = user.meetingId;
+    if (socket.meetingId) {
+      const meetingId = socket.meetingId;
+      const userName = socket.userName;
       
-      console.log(`User ${user.userName} (${socket.id}) disconnected from meeting ${meetingId}`);
-      
-      // Remove user from the users array
-      users.splice(userIndex, 1);
-      
-      // Notify other users in the meeting
-      socket.to(meetingId).emit('user-disconnected', socket.id);
-      
-      // Update meeting participants if the meeting exists
-      if (meetings[meetingId]) {
-        // Remove user from participants
-        const participantIndex = meetings[meetingId].participants.findIndex(p => p.userId === socket.id);
-        if (participantIndex !== -1) {
-          meetings[meetingId].participants.splice(participantIndex, 1);
-          console.log(`Removed user ${socket.id} from meeting ${meetingId} participants`);
+      try {
+        // Update MongoDB if possible
+        if (meetings[meetingId]?.participants[socket.id]?.mongoUserId) {
+          const userId = meetings[meetingId].participants[socket.id].mongoUserId;
+          const meeting = await Meeting.findOne({ meetingId });
+          
+          if (meeting) {
+            // Remove the user from the meeting participants
+            meeting.participants = meeting.participants.filter(
+              participant => participant.toString() !== userId.toString()
+            );
+            await meeting.save();
+            console.log(`Removed ${userName} from MongoDB meeting ${meetingId}`);
+          }
         }
         
-        // If no participants left, consider cleaning up the meeting
-        if (meetings[meetingId].participants.length === 0) {
-          console.log(`Meeting ${meetingId} has no participants left, marking for cleanup`);
-          // You could delete the meeting here or mark it for cleanup
-          // For now, we'll keep it for history
+        // Remove from in-memory storage
+        if (meetings[meetingId] && meetings[meetingId].participants[socket.id]) {
+          delete meetings[meetingId].participants[socket.id];
+          console.log(`Removed ${userName} from in-memory meeting ${meetingId}`);
+          
+          // Notify others that the user has disconnected
+          socket.to(meetingId).emit('user-disconnected', socket.id);
+        }
+      } catch (error) {
+        console.error('Error handling disconnect:', error);
+        
+        // Fallback to in-memory only
+        if (meetings[meetingId] && meetings[meetingId].participants[socket.id]) {
+          delete meetings[meetingId].participants[socket.id];
+          console.log(`Fallback: Removed ${userName} from in-memory meeting ${meetingId}`);
+          
+          // Notify others that the user has disconnected
+          socket.to(meetingId).emit('user-disconnected', socket.id);
         }
       }
-    } else {
-      console.log(`User ${socket.id} disconnected but was not found in users array`);
     }
   });
 });
