@@ -176,7 +176,7 @@ io.on('connection', (socket) => {
   
   socket.on('sending-signal', (payload) => {
     const { userToSignal, callerID, signal, userName } = payload;
-    console.log(`User ${callerID} sending signal to ${userToSignal}`);
+    console.log(`User ${callerID} (${userName}) sending signal to ${userToSignal}`);
     io.to(userToSignal).emit('user-joined', { signal, callerID, userName });
   });
   

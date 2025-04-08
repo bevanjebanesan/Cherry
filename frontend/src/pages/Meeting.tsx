@@ -124,7 +124,11 @@ const Meeting: React.FC = () => {
     setTranscripts({});
     setTranscript('');
     
-    const newSocket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000');
+    // Use the REACT_APP_SOCKET_URL environment variable or fallback to the deployed backend URL
+    const socketUrl = process.env.REACT_APP_SOCKET_URL || 'https://cherry-backend-ybwi.onrender.com';
+    console.log('Connecting to socket server at:', socketUrl);
+    
+    const newSocket = io(socketUrl);
     setSocket(newSocket);
 
     // Get user media with constraints
@@ -143,8 +147,10 @@ const Meeting: React.FC = () => {
         setStream(stream);
         if (userVideo.current) {
           userVideo.current.srcObject = stream;
+          
+          // Ensure video plays
           userVideo.current.play().catch(err => {
-            console.error("Error playing video:", err);
+            console.error("Error playing local video:", err);
           });
         }
 
@@ -258,6 +264,25 @@ const Meeting: React.FC = () => {
       });
   };
 
+  // Set video reference for a peer
+  const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
+    if (element) {
+      peerVideos.current[peerId] = element;
+      
+      // Find the peer
+      const peer = peers.find(p => p.peerId === peerId);
+      
+      // If we have a stream for this peer, set it to the video element
+      if (peer && peer.stream) {
+        console.log('Setting stream to video element for peer:', peerId);
+        element.srcObject = peer.stream;
+        element.play().catch(err => {
+          console.error(`Error playing video for ${peerId}:`, err);
+        });
+      }
+    }
+  };
+
   // Create a peer connection to a new user
   const connectToNewUser = (userId: string, stream: MediaStream | null, remoteUserName: string) => {
     console.log('Connecting to new user:', userId, 'Name:', remoteUserName);
@@ -318,6 +343,11 @@ const Meeting: React.FC = () => {
       console.log('Received stream as initiator from:', userToSignal, 'Stream ID:', currentStream.id);
       
       // Update the peer object with the stream
+      const peerObj = peersRef.current.find(p => p.peerId === userToSignal);
+      if (peerObj) {
+        peerObj.stream = currentStream;
+      }
+      
       setPeers(prevPeers => 
         prevPeers.map(p => 
           p.peerId === userToSignal 
@@ -325,6 +355,15 @@ const Meeting: React.FC = () => {
             : p
         )
       );
+      
+      // If we already have a video element for this peer, set the stream to it
+      if (peerVideos.current[userToSignal]) {
+        console.log('Setting stream to existing video element for peer:', userToSignal);
+        peerVideos.current[userToSignal].srcObject = currentStream;
+        peerVideos.current[userToSignal].play().catch(err => {
+          console.error(`Error playing video for ${userToSignal}:`, err);
+        });
+      }
     });
 
     peer.on('error', (err) => {
@@ -366,6 +405,11 @@ const Meeting: React.FC = () => {
       console.log('Received stream as receiver from:', callerID, 'Stream ID:', currentStream.id);
       
       // Update the peer object with the stream
+      const peerObj = peersRef.current.find(p => p.peerId === callerID);
+      if (peerObj) {
+        peerObj.stream = currentStream;
+      }
+      
       setPeers(prevPeers => 
         prevPeers.map(p => 
           p.peerId === callerID 
@@ -373,6 +417,15 @@ const Meeting: React.FC = () => {
             : p
         )
       );
+      
+      // If we already have a video element for this peer, set the stream to it
+      if (peerVideos.current[callerID]) {
+        console.log('Setting stream to existing video element for peer:', callerID);
+        peerVideos.current[callerID].srcObject = currentStream;
+        peerVideos.current[callerID].play().catch(err => {
+          console.error(`Error playing video for ${callerID}:`, err);
+        });
+      }
     });
 
     peer.on('error', (err) => {
@@ -382,25 +435,6 @@ const Meeting: React.FC = () => {
     peer.signal(incomingSignal);
 
     return peer;
-  };
-
-  // Set video reference for a peer
-  const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
-    if (element) {
-      peerVideos.current[peerId] = element;
-      
-      // Find the peer
-      const peer = peers.find(p => p.peerId === peerId);
-      
-      // If we have a stream for this peer, set it to the video element
-      if (peer && peer.stream) {
-        console.log('Setting stream to video element for peer:', peerId);
-        element.srcObject = peer.stream;
-        element.play().catch(err => {
-          console.error(`Error playing video for ${peerId}:`, err);
-        });
-      }
-    }
   };
 
   // Toggle mute
@@ -554,9 +588,10 @@ const Meeting: React.FC = () => {
                   width: '100%',
                   height: '100%',
                   objectFit: 'cover',
+                  display: peer.stream && peer.stream.getVideoTracks().length > 0 ? 'block' : 'none'
                 }}
               />
-              {(!peer.stream || (peer.stream.getVideoTracks().length === 0)) && (
+              {(!peer.stream || peer.stream.getVideoTracks().length === 0 || peer.stream.getVideoTracks()[0].enabled === false) && (
                 <Box sx={{ 
                   position: 'absolute',
                   top: 0,
@@ -574,7 +609,7 @@ const Meeting: React.FC = () => {
                 </Box>
               )}
               <Box className="user-info">
-                {peer.userName || 'Guest'}
+                {peer.userName || 'Guest'} {peer.stream && peer.stream.getAudioTracks().length > 0 && !peer.stream.getAudioTracks()[0].enabled && <MicOffIcon fontSize="small" />}
               </Box>
             </Box>
           ))}
