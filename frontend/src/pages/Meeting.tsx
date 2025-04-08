@@ -124,7 +124,7 @@ const Meeting: React.FC = () => {
     setTranscripts({});
     setTranscript('');
     
-    const newSocket = io('http://localhost:5000');
+    const newSocket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000');
     setSocket(newSocket);
 
     // Get user media with constraints
