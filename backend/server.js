@@ -13,32 +13,32 @@ const User = require('./models/User');
 
 const app = express();
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://cherry-video-chat.vercel.app', 
-    'https://cherry-git-main-bevanjebanesan.vercel.app',
-    'https://cherry-bevanjebanesan.vercel.app',
-    'https://cherry.vercel.app'
-  ],
-  methods: ['GET', 'POST'],
+  origin: process.env.FRONTEND_URL 
+    ? [process.env.FRONTEND_URL, process.env.FRONTEND_URL.replace(/\/$/, '')]
+    : [
+      'http://localhost:3000',
+      'https://cherry-coral.vercel.app',
+      'https://cherry-coral.vercel.app/'
+    ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true
 }));
 app.use(express.json());
 
 const server = http.createServer(app);
 
-const allowedOrigins = [
-  'http://localhost:3000',
-  'https://cherry-video-chat.vercel.app', 
-  'https://cherry-git-main-bevanjebanesan.vercel.app',
-  'https://cherry-bevanjebanesan.vercel.app',
-  'https://cherry.vercel.app'
-];
+const allowedOrigins = process.env.FRONTEND_URL 
+  ? [process.env.FRONTEND_URL, process.env.FRONTEND_URL.replace(/\/$/, '')]
+  : [
+    'http://localhost:3000',
+    'https://cherry-coral.vercel.app',
+    'https://cherry-coral.vercel.app/'
+  ];
 
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
-    methods: ['GET', 'POST'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true
   },
 });
