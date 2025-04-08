@@ -1,9 +1,15 @@
 const express = require('express');
-const cors = require('cors');
-const { createServer } = require('http');
+const http = require('http');
 const { Server } = require('socket.io');
+const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
+require('dotenv').config();
+
+// Import MongoDB connection and models
+const connectDB = require('./db/mongoose');
+const Meeting = require('./models/Meeting');
+const User = require('./models/User');
 
 const app = express();
 app.use(cors({
@@ -19,7 +25,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
-const server = createServer(app);
+const server = http.createServer(app);
 
 const allowedOrigins = [
   'http://localhost:3000',
@@ -43,45 +49,99 @@ const users = {};
 
 // Socket.io event handlers
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log('New client connected:', socket.id);
   
-  socket.on('join-room', (meetingId, userId, userName) => {
-    console.log(`User ${userId} (${userName || 'Anonymous'}) joining room ${meetingId}`);
+  // Join a meeting room
+  socket.on('join-meeting', async ({ meetingId, userName }) => {
+    console.log(`User ${userName} joining meeting ${meetingId}`);
     
-    // Leave any previous rooms
-    if (users[socket.id]) {
-      const prevRoom = users[socket.id].meetingId;
-      socket.leave(prevRoom);
-      console.log(`User ${userId} left room ${prevRoom}`);
-    }
-    
-    // Join the new room
-    socket.join(meetingId);
-    users[socket.id] = { userId, meetingId, userName: userName || 'Anonymous' };
-    
-    // Initialize meeting if it doesn't exist
-    if (!meetings[meetingId]) {
-      meetings[meetingId] = {
-        id: meetingId,
-        participants: {},
-        messages: [],
+    try {
+      // Create a guest user in MongoDB
+      const guestUser = new User({
+        name: userName,
+        email: `guest-${uuidv4()}@cherry.app`,
+        password: uuidv4(),
+        isGuest: true
+      });
+      
+      // Save the guest user to MongoDB
+      const savedUser = await guestUser.save();
+      
+      // Try to find the meeting in MongoDB
+      let meeting = await Meeting.findOne({ meetingId });
+      
+      if (meeting) {
+        // Add the user to the meeting participants
+        meeting.participants.push(savedUser._id);
+        await meeting.save();
+        console.log(`Added ${userName} to MongoDB meeting ${meetingId}`);
+      }
+      
+      // Also update in-memory data for backward compatibility
+      if (!meetings[meetingId]) {
+        meetings[meetingId] = {
+          id: meetingId,
+          participants: {},
+          messages: [],
+        };
+      }
+      
+      // Add the participant to the in-memory meeting
+      meetings[meetingId].participants[socket.id] = {
+        id: socket.id,
+        userName,
+        mongoUserId: savedUser._id
       };
+      
+      // Join the socket room
+      socket.join(meetingId);
+      socket.meetingId = meetingId;
+      socket.userName = userName;
+      
+      // Notify others that a new participant has joined
+      socket.to(meetingId).emit('user-joined', {
+        id: socket.id,
+        userName,
+      });
+      
+      // Send the list of existing participants to the new user
+      socket.emit('existing-participants', Object.values(meetings[meetingId].participants));
+      
+      console.log(`User ${userName} joined meeting ${meetingId}`);
+    } catch (error) {
+      console.error('Error joining meeting:', error);
+      
+      // Fallback to in-memory only if MongoDB fails
+      if (!meetings[meetingId]) {
+        meetings[meetingId] = {
+          id: meetingId,
+          participants: {},
+          messages: [],
+        };
+      }
+      
+      // Add the participant to the in-memory meeting
+      meetings[meetingId].participants[socket.id] = {
+        id: socket.id,
+        userName,
+      };
+      
+      // Join the socket room
+      socket.join(meetingId);
+      socket.meetingId = meetingId;
+      socket.userName = userName;
+      
+      // Notify others that a new participant has joined
+      socket.to(meetingId).emit('user-joined', {
+        id: socket.id,
+        userName,
+      });
+      
+      // Send the list of existing participants to the new user
+      socket.emit('existing-participants', Object.values(meetings[meetingId].participants));
+      
+      console.log(`Fallback: User ${userName} joined meeting ${meetingId} (in-memory only)`);
     }
-    
-    // Add user to meeting participants
-    meetings[meetingId].participants[userId] = { 
-      id: userId, 
-      userName: userName || 'Anonymous' 
-    };
-    
-    // Send list of existing users in the room to the new user
-    const existingUsers = Object.values(meetings[meetingId].participants);
-    socket.emit('get-users', existingUsers);
-    console.log(`Sent existing users to ${userId}:`, existingUsers);
-    
-    // Notify other users in the room
-    socket.to(meetingId).emit('user-connected', userId, userName);
-    console.log(`Notified room ${meetingId} about new user ${userId} (${userName || 'Anonymous'})`);
   });
   
   socket.on('sending-signal', (payload) => {
@@ -125,30 +185,49 @@ io.on('connection', (socket) => {
     }
   });
   
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log(`User disconnected: ${socket.id}`);
-    const user = users[socket.id];
     
-    if (user) {
-      const { meetingId, userId } = user;
+    if (socket.meetingId) {
+      const meetingId = socket.meetingId;
+      const userName = socket.userName;
       
-      // Remove user from meeting participants
-      if (meetings[meetingId] && meetings[meetingId].participants[userId]) {
-        delete meetings[meetingId].participants[userId];
+      try {
+        // Update MongoDB if possible
+        if (meetings[meetingId]?.participants[socket.id]?.mongoUserId) {
+          const userId = meetings[meetingId].participants[socket.id].mongoUserId;
+          const meeting = await Meeting.findOne({ meetingId });
+          
+          if (meeting) {
+            // Remove the user from the meeting participants
+            meeting.participants = meeting.participants.filter(
+              participant => participant.toString() !== userId.toString()
+            );
+            await meeting.save();
+            console.log(`Removed ${userName} from MongoDB meeting ${meetingId}`);
+          }
+        }
         
-        // If no participants left, clean up the meeting
-        if (Object.keys(meetings[meetingId].participants).length === 0) {
-          delete meetings[meetingId];
-          console.log(`Meeting ${meetingId} removed as it has no participants`);
+        // Remove from in-memory storage
+        if (meetings[meetingId] && meetings[meetingId].participants[socket.id]) {
+          delete meetings[meetingId].participants[socket.id];
+          console.log(`Removed ${userName} from in-memory meeting ${meetingId}`);
+          
+          // Notify others that the user has left
+          socket.to(meetingId).emit('user-left', socket.id);
+        }
+      } catch (error) {
+        console.error('Error handling disconnect:', error);
+        
+        // Fallback to in-memory only
+        if (meetings[meetingId] && meetings[meetingId].participants[socket.id]) {
+          delete meetings[meetingId].participants[socket.id];
+          console.log(`Fallback: Removed ${userName} from in-memory meeting ${meetingId}`);
+          
+          // Notify others that the user has left
+          socket.to(meetingId).emit('user-left', socket.id);
         }
       }
-      
-      // Notify other users in the room
-      socket.to(meetingId).emit('user-disconnected', userId);
-      console.log(`Notified room ${meetingId} about user ${userId} disconnection`);
-      
-      // Remove user from users object
-      delete users[socket.id];
     }
   });
 });
@@ -161,42 +240,110 @@ app.get('/api/test', (req, res) => {
 });
 
 // API routes
-app.post('/api/meetings/create', (req, res) => {
+app.post('/api/meetings/create', async (req, res) => {
   console.log('Received request to create meeting');
   console.log('Request headers:', req.headers);
   
-  const meetingId = uuidv4();
-  meetings[meetingId] = {
-    id: meetingId,
-    participants: {},
-    messages: [],
-  };
-  console.log(`Created new meeting: ${meetingId}`);
-  
-  // Set CORS headers explicitly for this route
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
-  res.json({ meetingId });
+  try {
+    const meetingId = uuidv4();
+    
+    // Create a guest user for the host (since we don't have authentication yet)
+    const guestUser = new User({
+      name: 'Guest Host',
+      email: `guest-${uuidv4()}@cherry.app`,
+      password: uuidv4(),
+      isGuest: true
+    });
+    
+    // Save the guest user to MongoDB
+    const savedUser = await guestUser.save();
+    
+    // Create a new meeting in MongoDB
+    const meeting = new Meeting({
+      meetingId: meetingId,
+      host: savedUser._id,
+      participants: [savedUser._id],
+      startTime: new Date(),
+      isActive: true
+    });
+    
+    // Save the meeting to MongoDB
+    await meeting.save();
+    
+    console.log(`Created new meeting in MongoDB: ${meetingId}`);
+    
+    // Also keep in memory for backward compatibility
+    meetings[meetingId] = {
+      id: meetingId,
+      participants: {},
+      messages: [],
+    };
+    
+    // Set CORS headers explicitly for this route
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    res.json({ meetingId });
+  } catch (error) {
+    console.error('Error creating meeting:', error);
+    
+    // Fallback to in-memory if MongoDB fails
+    const meetingId = uuidv4();
+    meetings[meetingId] = {
+      id: meetingId,
+      participants: {},
+      messages: [],
+    };
+    console.log(`Fallback: Created new meeting in memory: ${meetingId}`);
+    
+    res.json({ meetingId });
+  }
 });
 
-app.get('/api/meetings/:meetingId', (req, res) => {
+app.get('/api/meetings/:meetingId', async (req, res) => {
   const { meetingId } = req.params;
-  const meeting = meetings[meetingId];
   
-  if (!meeting) {
+  try {
+    // Try to find the meeting in MongoDB
+    const meeting = await Meeting.findOne({ meetingId }).populate('host participants');
+    
+    if (meeting) {
+      console.log(`Found meeting in MongoDB: ${meetingId}`);
+      return res.json({
+        id: meeting.meetingId,
+        host: meeting.host,
+        participants: meeting.participants,
+        startTime: meeting.startTime,
+        isActive: meeting.isActive
+      });
+    }
+    
+    // Fallback to in-memory if not found in MongoDB
+    if (meetings[meetingId]) {
+      console.log(`Found meeting in memory: ${meetingId}`);
+      return res.json(meetings[meetingId]);
+    }
+    
+    console.log(`Meeting not found: ${meetingId}`);
+    return res.status(404).json({ error: 'Meeting not found' });
+  } catch (error) {
+    console.error('Error retrieving meeting:', error);
+    
+    // Fallback to in-memory if MongoDB fails
+    if (meetings[meetingId]) {
+      console.log(`Fallback: Found meeting in memory: ${meetingId}`);
+      return res.json(meetings[meetingId]);
+    }
+    
     return res.status(404).json({ error: 'Meeting not found' });
   }
-  
-  res.json({ 
-    meetingId, 
-    participantCount: Object.keys(meeting.participants).length,
-    participants: Object.values(meeting.participants).map(p => ({ id: p.id, name: p.userName }))
-  });
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
+  
+  // Connect to MongoDB
+  await connectDB();
 });
