@@ -155,6 +155,9 @@ io.on('connection', (socket) => {
 
 // API routes
 app.post('/api/meetings/create', (req, res) => {
+  console.log('Received request to create meeting');
+  console.log('Request headers:', req.headers);
+  
   const meetingId = uuidv4();
   meetings[meetingId] = {
     id: meetingId,
@@ -162,6 +165,12 @@ app.post('/api/meetings/create', (req, res) => {
     messages: [],
   };
   console.log(`Created new meeting: ${meetingId}`);
+  
+  // Set CORS headers explicitly for this route
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
   res.json({ meetingId });
 });
 
