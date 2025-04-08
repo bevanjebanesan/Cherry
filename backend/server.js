@@ -177,13 +177,25 @@ io.on('connection', (socket) => {
   socket.on('sending-signal', (payload) => {
     const { userToSignal, callerID, signal, userName } = payload;
     console.log(`User ${callerID} (${userName}) sending signal to ${userToSignal}`);
-    io.to(userToSignal).emit('user-joined', { signal, callerID, userName });
+    
+    // Make sure the user to signal exists
+    if (io.sockets.sockets.has(userToSignal)) {
+      io.to(userToSignal).emit('user-joined', { signal, callerID, userName });
+    } else {
+      console.log(`User ${userToSignal} not found, cannot send signal`);
+    }
   });
   
   socket.on('returning-signal', (payload) => {
     const { signal, callerID } = payload;
     console.log(`User ${socket.id} returning signal to ${callerID}`);
-    io.to(callerID).emit('receiving-returned-signal', { signal, id: socket.id });
+    
+    // Make sure the caller ID exists
+    if (io.sockets.sockets.has(callerID)) {
+      io.to(callerID).emit('receiving-returned-signal', { signal, id: socket.id });
+    } else {
+      console.log(`User ${callerID} not found, cannot return signal`);
+    }
   });
   
   socket.on('send-message', ({ meetingId, message }) => {

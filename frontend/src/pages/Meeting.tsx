@@ -128,8 +128,26 @@ const Meeting: React.FC = () => {
     const socketUrl = process.env.REACT_APP_SOCKET_URL || 'https://cherry-backend-ybwi.onrender.com';
     console.log('Connecting to socket server at:', socketUrl);
     
-    const newSocket = io(socketUrl);
+    const newSocket = io(socketUrl, {
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      timeout: 20000
+    });
     setSocket(newSocket);
+
+    // Log socket connection events
+    newSocket.on('connect', () => {
+      console.log('Socket connected successfully with ID:', newSocket.id);
+    });
+
+    newSocket.on('connect_error', (err) => {
+      console.error('Socket connection error:', err);
+    });
+
+    newSocket.on('disconnect', (reason) => {
+      console.log('Socket disconnected:', reason);
+    });
 
     // Get user media with constraints
     const constraints = {
@@ -312,20 +330,42 @@ const Meeting: React.FC = () => {
     
     const peer = new Peer({
       initiator: true,
-      trickle: false,
+      trickle: true, // Enable trickle ICE for faster connections
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:global.stun.twilio.com:3478' },
+          {
+            urls: 'turn:relay.metered.ca:80',
+            username: 'e7eb9e7b4b3b6a1e3b8b6b6a',
+            credential: 'Fy9/K99gQvft+TB2',
+          },
+          {
+            urls: 'turn:relay.metered.ca:443',
+            username: 'e7eb9e7b4b3b6a1e3b8b6b6a',
+            credential: 'Fy9/K99gQvft+TB2',
+          },
+          {
+            urls: 'turn:relay.metered.ca:443?transport=tcp',
+            username: 'e7eb9e7b4b3b6a1e3b8b6b6a',
+            credential: 'Fy9/K99gQvft+TB2',
+          },
         ]
       }
     });
 
     // Add stream if available
     if (stream) {
-      stream.getTracks().forEach(track => {
-        peer.addTrack(track, stream);
-      });
+      console.log('Adding local stream to initiator peer, tracks:', stream.getTracks().length);
+      try {
+        stream.getTracks().forEach(track => {
+          peer.addTrack(track, stream);
+        });
+      } catch (err) {
+        console.error('Error adding tracks to peer:', err);
+      }
     }
 
     // Handle peer events
@@ -339,8 +379,12 @@ const Meeting: React.FC = () => {
       });
     });
 
+    peer.on('connect', () => {
+      console.log('Peer connection established with:', userToSignal);
+    });
+
     peer.on('stream', (currentStream) => {
-      console.log('Received stream as initiator from:', userToSignal, 'Stream ID:', currentStream.id);
+      console.log('Received stream as initiator from:', userToSignal, 'Stream ID:', currentStream.id, 'Tracks:', currentStream.getTracks().length);
       
       // Update the peer object with the stream
       const peerObj = peersRef.current.find(p => p.peerId === userToSignal);
@@ -366,8 +410,16 @@ const Meeting: React.FC = () => {
       }
     });
 
+    peer.on('track', (track, stream) => {
+      console.log('Received track as initiator from:', userToSignal, 'Track kind:', track.kind);
+    });
+
     peer.on('error', (err) => {
       console.error('Peer connection error with:', userToSignal, err);
+    });
+
+    peer.on('close', () => {
+      console.log('Peer connection closed with:', userToSignal);
     });
 
     return peer;
@@ -379,20 +431,42 @@ const Meeting: React.FC = () => {
     
     const peer = new Peer({
       initiator: false,
-      trickle: false,
+      trickle: true, // Enable trickle ICE for faster connections
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:global.stun.twilio.com:3478' },
+          {
+            urls: 'turn:relay.metered.ca:80',
+            username: 'e7eb9e7b4b3b6a1e3b8b6b6a',
+            credential: 'Fy9/K99gQvft+TB2',
+          },
+          {
+            urls: 'turn:relay.metered.ca:443',
+            username: 'e7eb9e7b4b3b6a1e3b8b6b6a',
+            credential: 'Fy9/K99gQvft+TB2',
+          },
+          {
+            urls: 'turn:relay.metered.ca:443?transport=tcp',
+            username: 'e7eb9e7b4b3b6a1e3b8b6b6a',
+            credential: 'Fy9/K99gQvft+TB2',
+          },
         ]
       }
     });
 
     // Add stream if available
     if (stream) {
-      stream.getTracks().forEach(track => {
-        peer.addTrack(track, stream);
-      });
+      console.log('Adding local stream to receiver peer, tracks:', stream.getTracks().length);
+      try {
+        stream.getTracks().forEach(track => {
+          peer.addTrack(track, stream);
+        });
+      } catch (err) {
+        console.error('Error adding tracks to peer:', err);
+      }
     }
 
     // Handle peer events
@@ -401,8 +475,12 @@ const Meeting: React.FC = () => {
       socket?.emit('returning-signal', { signal: data, callerID });
     });
 
+    peer.on('connect', () => {
+      console.log('Peer connection established with:', callerID);
+    });
+
     peer.on('stream', (currentStream) => {
-      console.log('Received stream as receiver from:', callerID, 'Stream ID:', currentStream.id);
+      console.log('Received stream as receiver from:', callerID, 'Stream ID:', currentStream.id, 'Tracks:', currentStream.getTracks().length);
       
       // Update the peer object with the stream
       const peerObj = peersRef.current.find(p => p.peerId === callerID);
@@ -428,11 +506,24 @@ const Meeting: React.FC = () => {
       }
     });
 
+    peer.on('track', (track, stream) => {
+      console.log('Received track as receiver from:', callerID, 'Track kind:', track.kind);
+    });
+
     peer.on('error', (err) => {
       console.error('Peer connection error with:', callerID, err);
     });
 
-    peer.signal(incomingSignal);
+    peer.on('close', () => {
+      console.log('Peer connection closed with:', callerID);
+    });
+
+    // Signal the peer with the incoming signal
+    try {
+      peer.signal(incomingSignal);
+    } catch (err) {
+      console.error('Error signaling peer:', err);
+    }
 
     return peer;
   };
@@ -584,6 +675,7 @@ const Meeting: React.FC = () => {
                 ref={(element) => setPeerVideoRef(peer.peerId, element)}
                 autoPlay
                 playsInline
+                muted={false}
                 style={{ 
                   width: '100%',
                   height: '100%',
@@ -591,7 +683,8 @@ const Meeting: React.FC = () => {
                   display: peer.stream && peer.stream.getVideoTracks().length > 0 ? 'block' : 'none'
                 }}
               />
-              {(!peer.stream || peer.stream.getVideoTracks().length === 0 || peer.stream.getVideoTracks()[0].enabled === false) && (
+              {(!peer.stream || peer.stream.getVideoTracks().length === 0 || 
+                (peer.stream.getVideoTracks().length > 0 && !peer.stream.getVideoTracks()[0].enabled)) && (
                 <Box sx={{ 
                   position: 'absolute',
                   top: 0,
@@ -609,7 +702,9 @@ const Meeting: React.FC = () => {
                 </Box>
               )}
               <Box className="user-info">
-                {peer.userName || 'Guest'} {peer.stream && peer.stream.getAudioTracks().length > 0 && !peer.stream.getAudioTracks()[0].enabled && <MicOffIcon fontSize="small" />}
+                {peer.userName || 'Guest'} 
+                {peer.stream && peer.stream.getAudioTracks().length > 0 && 
+                 !peer.stream.getAudioTracks()[0].enabled && <MicOffIcon fontSize="small" />}
               </Box>
             </Box>
           ))}
