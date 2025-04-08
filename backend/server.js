@@ -14,6 +14,9 @@ const server = createServer(app);
 const allowedOrigins = [
   'http://localhost:3000',
   'https://cherry-video-chat.vercel.app', 
+  'https://cherry-git-main-bevanjebanesan.vercel.app',
+  'https://cherry-bevanjebanesan.vercel.app',
+  'https://cherry.vercel.app'
 ];
 
 const io = new Server(server, {
