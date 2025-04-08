@@ -52,8 +52,8 @@ io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
   
   // Join a meeting room
-  socket.on('join-meeting', async ({ meetingId, userName }) => {
-    console.log(`User ${userName} joining meeting ${meetingId}`);
+  socket.on('join-room', async (meetingId, userId, userName) => {
+    console.log(`User ${userName} (${userId}) joining meeting ${meetingId}`);
     
     try {
       // Create a guest user in MongoDB
@@ -93,19 +93,34 @@ io.on('connection', (socket) => {
         mongoUserId: savedUser._id
       };
       
+      // Store user info
+      users[socket.id] = {
+        userId: socket.id,
+        userName: userName,
+        meetingId: meetingId
+      };
+      
       // Join the socket room
       socket.join(meetingId);
       socket.meetingId = meetingId;
       socket.userName = userName;
       
-      // Notify others that a new participant has joined
-      socket.to(meetingId).emit('user-joined', {
-        id: socket.id,
-        userName,
-      });
+      // Get all users in this room
+      const usersInThisRoom = [];
+      for (let id in meetings[meetingId].participants) {
+        if (id !== socket.id) {
+          usersInThisRoom.push({
+            id,
+            userName: meetings[meetingId].participants[id].userName
+          });
+        }
+      }
       
-      // Send the list of existing participants to the new user
-      socket.emit('existing-participants', Object.values(meetings[meetingId].participants));
+      // Send the list of existing users to the new user
+      socket.emit('get-users', usersInThisRoom);
+      
+      // Notify others that a new user has connected
+      socket.to(meetingId).emit('user-connected', socket.id, userName);
       
       console.log(`User ${userName} joined meeting ${meetingId}`);
     } catch (error) {
@@ -126,19 +141,34 @@ io.on('connection', (socket) => {
         userName,
       };
       
+      // Store user info
+      users[socket.id] = {
+        userId: socket.id,
+        userName: userName,
+        meetingId: meetingId
+      };
+      
       // Join the socket room
       socket.join(meetingId);
       socket.meetingId = meetingId;
       socket.userName = userName;
       
-      // Notify others that a new participant has joined
-      socket.to(meetingId).emit('user-joined', {
-        id: socket.id,
-        userName,
-      });
+      // Get all users in this room
+      const usersInThisRoom = [];
+      for (let id in meetings[meetingId].participants) {
+        if (id !== socket.id) {
+          usersInThisRoom.push({
+            id,
+            userName: meetings[meetingId].participants[id].userName
+          });
+        }
+      }
       
-      // Send the list of existing participants to the new user
-      socket.emit('existing-participants', Object.values(meetings[meetingId].participants));
+      // Send the list of existing users to the new user
+      socket.emit('get-users', usersInThisRoom);
+      
+      // Notify others that a new user has connected
+      socket.to(meetingId).emit('user-connected', socket.id, userName);
       
       console.log(`Fallback: User ${userName} joined meeting ${meetingId} (in-memory only)`);
     }
@@ -213,8 +243,8 @@ io.on('connection', (socket) => {
           delete meetings[meetingId].participants[socket.id];
           console.log(`Removed ${userName} from in-memory meeting ${meetingId}`);
           
-          // Notify others that the user has left
-          socket.to(meetingId).emit('user-left', socket.id);
+          // Notify others that the user has disconnected
+          socket.to(meetingId).emit('user-disconnected', socket.id);
         }
       } catch (error) {
         console.error('Error handling disconnect:', error);
@@ -224,8 +254,8 @@ io.on('connection', (socket) => {
           delete meetings[meetingId].participants[socket.id];
           console.log(`Fallback: Removed ${userName} from in-memory meeting ${meetingId}`);
           
-          // Notify others that the user has left
-          socket.to(meetingId).emit('user-left', socket.id);
+          // Notify others that the user has disconnected
+          socket.to(meetingId).emit('user-disconnected', socket.id);
         }
       }
     }

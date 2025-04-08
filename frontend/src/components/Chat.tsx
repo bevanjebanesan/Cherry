@@ -45,7 +45,7 @@ const Chat: React.FC<ChatProps> = ({ socket, meetingId, userName }) => {
     return () => {
       socket.off('receive-message', handleReceiveMessage);
     };
-  }, [socket]);
+  }, [socket, meetingId]);
 
   useEffect(() => {
     scrollToBottom();
