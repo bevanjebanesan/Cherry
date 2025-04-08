@@ -3,16 +3,24 @@ const cors = require('cors');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const server = createServer(app);
+
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://cherry-video-chat.vercel.app', 
+];
+
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
+    credentials: true
   },
 });
 
