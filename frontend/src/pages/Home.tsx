@@ -25,11 +25,13 @@ const Home: React.FC = () => {
       // Clear any stored user data from previous meetings
       sessionStorage.removeItem('userName');
       
-      const response = await axios.post('http://localhost:5000/api/meetings/create');
+      const backendUrl = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
+      const response = await axios.post(`${backendUrl}/api/meetings/create`);
       const { meetingId } = response.data;
       navigate(`/meeting/${meetingId}`);
     } catch (error) {
       console.error('Error creating meeting:', error);
+      setError('Failed to create meeting. Please try again.');
     }
   };
 

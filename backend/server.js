@@ -6,7 +6,17 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'https://cherry-video-chat.vercel.app', 
+    'https://cherry-git-main-bevanjebanesan.vercel.app',
+    'https://cherry-bevanjebanesan.vercel.app',
+    'https://cherry.vercel.app'
+  ],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 app.use(express.json());
 
 const server = createServer(app);
