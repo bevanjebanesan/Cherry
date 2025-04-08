@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -8,10 +8,13 @@ import {
   TextField,
   Paper,
   Stack,
+  Alert,
+  CircularProgress,
 } from '@mui/material';
 import {
   VideoCall as VideoCallIcon,
   Login as LoginIcon,
+  BugReport as BugReportIcon,
 } from '@mui/icons-material';
 import axios from 'axios';
 
@@ -19,9 +22,20 @@ const Home: React.FC = () => {
   const navigate = useNavigate();
   const [meetingId, setMeetingId] = useState('');
   const [error, setError] = useState('');
+  const [backendUrl, setBackendUrl] = useState('');
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
+
+  useEffect(() => {
+    const url = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
+    setBackendUrl(url);
+  }, []);
 
   const createMeeting = async () => {
     try {
+      setLoading(true);
+      setError('');
       // Clear any stored user data from previous meetings
       sessionStorage.removeItem('userName');
       
@@ -37,13 +51,16 @@ const Home: React.FC = () => {
       if (error.response) {
         console.error('Response data:', error.response.data);
         console.error('Response status:', error.response.status);
+        setError(`Failed to create meeting (${error.response.status}). Please try again.`);
       } else if (error.request) {
         console.error('No response received:', error.request);
+        setError('Failed to create meeting. The server is not responding. Please try again later.');
       } else {
         console.error('Error message:', error.message);
+        setError(`Failed to create meeting: ${error.message}`);
       }
-      // Show an error message to the user
-      setError('Failed to create meeting. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -59,6 +76,30 @@ const Home: React.FC = () => {
     navigate(`/meeting/${meetingId}`);
   };
 
+  const testBackendConnection = async () => {
+    setLoading(true);
+    setError('');
+    setTestResult(null);
+    
+    try {
+      console.log('Testing connection to:', backendUrl);
+      const response = await axios.get(`${backendUrl}/api/test`);
+      console.log('Test response:', response.data);
+      setTestResult(JSON.stringify(response.data, null, 2));
+    } catch (error: any) {
+      console.error('Error testing backend:', error);
+      if (error.response) {
+        setError(`Error ${error.response.status}: ${JSON.stringify(error.response.data)}`);
+      } else if (error.request) {
+        setError('No response received from server. The backend might be down or unreachable.');
+      } else {
+        setError(`Error: ${error.message}`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <Container maxWidth="md">
       <Box sx={{ my: 8, textAlign: 'center' }}>
@@ -68,6 +109,27 @@ const Home: React.FC = () => {
         <Typography variant="h5" color="text.secondary" paragraph>
           Simple and secure video conferencing for everyone
         </Typography>
+
+        {loading && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', my: 2 }}>
+            <CircularProgress />
+          </Box>
+        )}
+
+        {error && (
+          <Alert severity="error" sx={{ my: 2 }}>
+            {error}
+          </Alert>
+        )}
+
+        {testResult && (
+          <Alert severity="success" sx={{ my: 2 }}>
+            <Typography variant="body1">Backend connection successful!</Typography>
+            <Box component="pre" sx={{ mt: 1, textAlign: 'left', fontSize: '0.8rem' }}>
+              {testResult}
+            </Box>
+          </Alert>
+        )}
 
         <Stack 
           direction={{ xs: 'column', md: 'row' }} 
@@ -100,6 +162,7 @@ const Home: React.FC = () => {
               onClick={createMeeting}
               startIcon={<VideoCallIcon />}
               fullWidth
+              disabled={loading}
             >
               Create Meeting
             </Button>
@@ -143,11 +206,43 @@ const Home: React.FC = () => {
               onClick={joinMeeting}
               startIcon={<LoginIcon />}
               fullWidth
+              disabled={loading}
             >
               Join Meeting
             </Button>
           </Paper>
         </Stack>
+
+        <Box sx={{ mt: 4 }}>
+          <Button 
+            variant="outlined" 
+            color="secondary"
+            onClick={() => setShowDebug(!showDebug)}
+            startIcon={<BugReportIcon />}
+          >
+            {showDebug ? 'Hide Debug Tools' : 'Show Debug Tools'}
+          </Button>
+
+          {showDebug && (
+            <Paper sx={{ p: 3, mt: 2 }}>
+              <Typography variant="h6" gutterBottom>
+                Debug Information
+              </Typography>
+              <Typography variant="body1" gutterBottom>
+                Backend URL: <code>{backendUrl}</code>
+              </Typography>
+              <Button 
+                variant="contained" 
+                color="secondary"
+                onClick={testBackendConnection}
+                disabled={loading}
+                sx={{ mt: 2 }}
+              >
+                Test Backend Connection
+              </Button>
+            </Paper>
+          )}
+        </Box>
       </Box>
     </Container>
   );
