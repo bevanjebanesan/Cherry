@@ -26,11 +26,23 @@ const Home: React.FC = () => {
       sessionStorage.removeItem('userName');
       
       const backendUrl = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
+      console.log('Using backend URL:', backendUrl);
+      
       const response = await axios.post(`${backendUrl}/api/meetings/create`);
+      console.log('Meeting created successfully:', response.data);
       const { meetingId } = response.data;
       navigate(`/meeting/${meetingId}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating meeting:', error);
+      if (error.response) {
+        console.error('Response data:', error.response.data);
+        console.error('Response status:', error.response.status);
+      } else if (error.request) {
+        console.error('No response received:', error.request);
+      } else {
+        console.error('Error message:', error.message);
+      }
+      // Show an error message to the user
       setError('Failed to create meeting. Please try again.');
     }
   };
