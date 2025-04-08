@@ -53,121 +53,106 @@ io.on('connection', (socket) => {
   
   // Join a meeting room
   socket.on('join-room', async (meetingId, userId, userName) => {
-    console.log(`User ${userName} (${userId}) joining meeting ${meetingId}`);
+    console.log(`User ${userName} (${socket.id}) joining meeting ${meetingId}`);
+    
+    // Store socket meeting info for disconnect handling
+    socket.meetingId = meetingId;
+    socket.userName = userName;
     
     try {
-      // Create a guest user in MongoDB
-      const guestUser = new User({
-        name: userName,
-        email: `guest-${uuidv4()}@cherry.app`,
-        password: uuidv4(),
-        isGuest: true
-      });
-      
-      // Save the guest user to MongoDB
-      const savedUser = await guestUser.save();
-      
-      // Try to find the meeting in MongoDB
-      let meeting = await Meeting.findOne({ meetingId });
-      
-      if (meeting) {
-        // Add the user to the meeting participants
-        meeting.participants.push(savedUser._id);
-        await meeting.save();
-        console.log(`Added ${userName} to MongoDB meeting ${meetingId}`);
+      // Check if this user is already in the meeting (reconnection case)
+      const existingUserIndex = users.findIndex(u => u.userId === socket.id);
+      if (existingUserIndex !== -1) {
+        console.log(`User ${userName} (${socket.id}) is reconnecting to meeting ${meetingId}`);
+        // Update the existing user entry
+        users[existingUserIndex].meetingId = meetingId;
+        users[existingUserIndex].userName = userName;
+      } else {
+        // Add new user to the users array
+        users.push({
+          userId: socket.id,
+          userName: userName,
+          meetingId: meetingId
+        });
+        console.log(`Added new user ${userName} (${socket.id}) to users array`);
       }
-      
-      // Also update in-memory data for backward compatibility
-      if (!meetings[meetingId]) {
-        meetings[meetingId] = {
-          id: meetingId,
-          participants: {},
-          messages: [],
-        };
-      }
-      
-      // Add the participant to the in-memory meeting
-      meetings[meetingId].participants[socket.id] = {
-        id: socket.id,
-        userName,
-        mongoUserId: savedUser._id
-      };
-      
-      // Store user info
-      users.push({
-        userId: socket.id,
-        userName: userName,
-        meetingId: meetingId
-      });
       
       // Join the socket room
       socket.join(meetingId);
-      socket.meetingId = meetingId;
-      socket.userName = userName;
       
-      // Get all users in this room
-      const usersInThisRoom = [];
-      for (let id in meetings[meetingId].participants) {
-        if (id !== socket.id) {
-          usersInThisRoom.push({
-            id,
-            userName: meetings[meetingId].participants[id].userName
-          });
-        }
+      // Create or update meeting in memory
+      if (!meetings[meetingId]) {
+        meetings[meetingId] = {
+          meetingId,
+          participants: [],
+          messages: [],
+          createdAt: new Date()
+        };
       }
       
-      // Send the list of existing users to the new user
+      // Check if user is already in the participants list
+      const participantExists = meetings[meetingId].participants.some(p => p.userId === socket.id);
+      
+      if (!participantExists) {
+        // Add user to meeting participants
+        meetings[meetingId].participants.push({
+          userId: socket.id,
+          userName: userName,
+          joinedAt: new Date()
+        });
+      }
+      
+      // Get all users in this meeting
+      const usersInThisRoom = users.filter(user => user.meetingId === meetingId);
+      
+      // Emit to the client who just joined
       socket.emit('get-users', usersInThisRoom);
       
-      // Notify others that a new user has connected
+      // Notify other clients in the room
       socket.to(meetingId).emit('user-connected', socket.id, userName);
       
-      console.log(`User ${userName} joined meeting ${meetingId}`);
+      console.log(`User ${userName} joined meeting ${meetingId} successfully`);
     } catch (error) {
-      console.error('Error joining meeting:', error);
+      console.error('Error joining room:', error);
       
-      // Fallback to in-memory only if MongoDB fails
+      // Fallback to in-memory only
+      socket.join(meetingId);
+      
+      // Add user to users array if not already there
+      if (!users.some(u => u.userId === socket.id)) {
+        users.push({
+          userId: socket.id,
+          userName: userName,
+          meetingId: meetingId
+        });
+      }
+      
+      // Create meeting if it doesn't exist
       if (!meetings[meetingId]) {
         meetings[meetingId] = {
-          id: meetingId,
-          participants: {},
+          meetingId,
+          participants: [],
           messages: [],
+          createdAt: new Date()
         };
       }
       
-      // Add the participant to the in-memory meeting
-      meetings[meetingId].participants[socket.id] = {
-        id: socket.id,
-        userName,
-      };
-      
-      // Store user info
-      users.push({
-        userId: socket.id,
-        userName: userName,
-        meetingId: meetingId
-      });
-      
-      // Join the socket room
-      socket.join(meetingId);
-      socket.meetingId = meetingId;
-      socket.userName = userName;
-      
-      // Get all users in this room
-      const usersInThisRoom = [];
-      for (let id in meetings[meetingId].participants) {
-        if (id !== socket.id) {
-          usersInThisRoom.push({
-            id,
-            userName: meetings[meetingId].participants[id].userName
-          });
-        }
+      // Add user to meeting participants if not already there
+      if (!meetings[meetingId].participants.some(p => p.userId === socket.id)) {
+        meetings[meetingId].participants.push({
+          userId: socket.id,
+          userName: userName,
+          joinedAt: new Date()
+        });
       }
       
-      // Send the list of existing users to the new user
+      // Get all users in this room
+      const usersInThisRoom = users.filter(user => user.meetingId === meetingId);
+      
+      // Emit to the client who just joined
       socket.emit('get-users', usersInThisRoom);
       
-      // Notify others that a new user has connected
+      // Notify other clients in the room
       socket.to(meetingId).emit('user-connected', socket.id, userName);
       
       console.log(`Fallback: User ${userName} joined meeting ${meetingId} (in-memory only)`);

@@ -186,12 +186,12 @@ const Meeting: React.FC = () => {
       console.log('Joined room:', meetingId, 'as', userName, 'with ID:', newSocket.id);
 
       // Handle existing users in the room
-      newSocket.on('get-users', (users: Array<{id: string, userName: string}>) => {
+      newSocket.on('get-users', (users: { userId: string; userName: string }[]) => {
         console.log('Existing users in room:', users);
         // Connect to each existing user
         users.forEach(user => {
-          if (user.id !== newSocket.id) {
-            connectToNewUser(user.id, stream, user.userName);
+          if (user.userId !== newSocket.id) {
+            connectToNewUser(user.userId, stream, user.userName);
           }
         });
       });
@@ -281,29 +281,6 @@ const Meeting: React.FC = () => {
         setSnackbarOpen(true);
       });
     };
-
-  // Create a peer connection to a new user
-  const connectToNewUser = useCallback((userId: string, stream: MediaStream | null, remoteUserName: string) => {
-    console.log('Connecting to new user:', userId, 'Name:', remoteUserName);
-    
-    // Check if we already have a connection to this peer
-    if (peersRef.current.some(p => p.peerId === userId)) {
-      console.log('Already connected to this peer, skipping');
-      return;
-    }
-    
-    // Create peer even if we don't have a stream
-    const peer = createPeer(userId, stream);
-    
-    peersRef.current.push({
-      peerId: userId,
-      peer,
-      userName: remoteUserName,
-    });
-
-    // Add peer to state
-    setPeers(users => [...users, { peerId: userId, peer, userName: remoteUserName }]);
-  }, []);
 
   // Create a peer connection as the initiator
   const createPeer = useCallback((userToSignal: string, stream: MediaStream | null) => {
@@ -428,6 +405,33 @@ const Meeting: React.FC = () => {
 
     return peer;
   }, [socket, userName]);
+
+  // Create a peer connection to a new user
+  const connectToNewUser = useCallback((userId: string, stream: MediaStream | null, remoteUserName: string) => {
+    console.log('Connecting to new user:', userId, 'Name:', remoteUserName);
+    
+    // Check if we already have a connection to this peer
+    if (peersRef.current.some(p => p.peerId === userId)) {
+      console.log('Already connected to this peer, skipping connection');
+      return;
+    }
+    
+    // Create peer even if we don't have a stream
+    const peer = createPeer(userId, stream);
+    
+    peersRef.current.push({
+      peerId: userId,
+      peer,
+      userName: remoteUserName,
+    });
+
+    // Add peer to state
+    setPeers(users => {
+      // First remove any existing peer with the same ID to prevent duplicates
+      const filteredUsers = users.filter(p => p.peerId !== userId);
+      return [...filteredUsers, { peerId: userId, peer, userName: remoteUserName }];
+    });
+  }, [createPeer]);
 
   // Add a peer connection as the receiver
   const addPeer = useCallback((incomingSignal: any, callerID: string, stream: MediaStream | null) => {
@@ -559,39 +563,117 @@ const Meeting: React.FC = () => {
   useEffect(() => {
     if (!socket) return;
 
-    // Handle when a new user joins the meeting
-    const handleUserJoined = ({ signal, callerID, userName: callerName }: { signal: any, callerID: string, userName: string }) => {
-      console.log('User joined:', callerID, callerName);
+    // Handle incoming user list
+    const handleGetUsers = (users: { userId: string; userName: string }[]) => {
+      console.log('Received user list:', users);
       
-      // Create a peer connection to the new user
-      const peer = addPeer(signal, callerID, stream);
+      // Filter out our own ID
+      const filteredUsers = users.filter(user => user.userId !== socket.id);
       
-      peersRef.current.push({
-        peerId: callerID,
-        peer,
-        userName: callerName,
+      // Clear existing peers first to prevent duplicates
+      setPeers([]);
+      peersRef.current = [];
+      
+      // Connect to each user
+      filteredUsers.forEach(user => {
+        connectToNewUser(user.userId, stream, user.userName);
       });
-
-      // Add peer to state
-      setPeers(prevPeers => [...prevPeers, { peerId: callerID, peer, userName: callerName }]);
     };
 
-    // Handle when a user returns a signal
-    const handleReceivingReturnedSignal = ({ signal, id }: { signal: any, id: string }) => {
-      console.log('Received returned signal from:', id);
-      const item = peersRef.current.find(p => p.peerId === id);
+    socket.on('get-users', handleGetUsers);
+
+    return () => {
+      socket.off('get-users', handleGetUsers);
+    };
+  }, [socket, connectToNewUser, stream]);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleUserConnected = (userId: string, userName: string) => {
+      console.log('User connected:', userId, userName);
+      
+      // Check if we already have this user in our peers
+      const existingPeer = peersRef.current.find(p => p.peerId === userId);
+      if (existingPeer) {
+        console.log('User already in peers list, not creating new connection:', userId);
+        return;
+      }
+      
+      connectToNewUser(userId, stream, userName);
+    };
+
+    socket.on('user-connected', handleUserConnected);
+
+    return () => {
+      socket.off('user-connected', handleUserConnected);
+    };
+  }, [socket, connectToNewUser, stream]);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleUserJoined = (payload: { signal: any; callerID: string; userName: string }) => {
+      console.log('User joined with signal:', payload.callerID, payload.userName);
+      
+      // Check if we already have this user in our peers
+      const existingPeer = peersRef.current.find(p => p.peerId === payload.callerID);
+      if (existingPeer) {
+        console.log('User already in peers list, updating signal:', payload.callerID);
+        existingPeer.peer.signal(payload.signal);
+        return;
+      }
+      
+      const peer = addPeer(payload.signal, payload.callerID, stream);
+      
+      peersRef.current.push({
+        peerId: payload.callerID,
+        peer,
+        userName: payload.userName,
+      });
+
+      setPeers(users => {
+        // First remove any existing peer with the same ID to prevent duplicates
+        const filteredUsers = users.filter(p => p.peerId !== payload.callerID);
+        return [...filteredUsers, { peerId: payload.callerID, peer, userName: payload.userName }];
+      });
+    };
+
+    socket.on('user-joined', handleUserJoined);
+
+    return () => {
+      socket.off('user-joined', handleUserJoined);
+    };
+  }, [socket, addPeer, stream]);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleReceivingReturnedSignal = (payload: { signal: any; id: string }) => {
+      console.log('Received returned signal from:', payload.id);
+      
+      const item = peersRef.current.find(p => p.peerId === payload.id);
       if (item) {
         try {
-          item.peer.signal(signal);
+          item.peer.signal(payload.signal);
         } catch (err) {
           console.error('Error signaling peer:', err);
         }
       } else {
-        console.warn('Could not find peer to signal:', id);
+        console.warn('Could not find peer to signal:', payload.id);
       }
     };
 
-    // Handle when a user disconnects
+    socket.on('receiving-returned-signal', handleReceivingReturnedSignal);
+
+    return () => {
+      socket.off('receiving-returned-signal', handleReceivingReturnedSignal);
+    };
+  }, [socket]);
+
+  useEffect(() => {
+    if (!socket) return;
+
     const handleUserDisconnected = (userId: string) => {
       console.log('User disconnected:', userId);
       
@@ -602,36 +684,18 @@ const Meeting: React.FC = () => {
       setPeers(prevPeers => prevPeers.filter(p => p.peerId !== userId));
       
       // Remove the peer's video element
-      delete peerVideos.current[userId];
+      if (peerVideos.current[userId]) {
+        console.log('Removing video element for disconnected peer:', userId);
+        delete peerVideos.current[userId];
+      }
     };
 
-    // Handle get users event
-    const handleGetUsers = (users: Array<{ userId: string, userName: string }>) => {
-      console.log('Got users:', users);
-      
-      // Connect to each user
-      users.forEach(user => {
-        if (user.userId !== socket.id) {
-          console.log('Connecting to existing user:', user.userId, user.userName);
-          connectToNewUser(user.userId, stream, user.userName);
-        }
-      });
-    };
-
-    // Register event handlers
-    socket.on('user-joined', handleUserJoined);
-    socket.on('receiving-returned-signal', handleReceivingReturnedSignal);
     socket.on('user-disconnected', handleUserDisconnected);
-    socket.on('get-users', handleGetUsers);
 
-    // Clean up event handlers
     return () => {
-      socket.off('user-joined', handleUserJoined);
-      socket.off('receiving-returned-signal', handleReceivingReturnedSignal);
       socket.off('user-disconnected', handleUserDisconnected);
-      socket.off('get-users', handleGetUsers);
     };
-  }, [socket, stream, addPeer, connectToNewUser]);
+  }, [socket]);
 
   // Set video reference for a peer
   const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
