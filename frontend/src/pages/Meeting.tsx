@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -19,6 +19,8 @@ import {
   InputAdornment,
   Badge,
   Avatar,
+  Grid,
+  Divider,
 } from '@mui/material';
 import {
   Mic as MicIcon,
@@ -27,6 +29,8 @@ import {
   VideocamOff as VideocamOffIcon,
   Chat as ChatIcon,
   RecordVoiceOver as RecordVoiceOverIcon,
+  VoiceOverOff as VoiceOverOffIcon,
+  CallEnd as CallEndIcon,
   Share as ShareIcon,
   ContentCopy as ContentCopyIcon,
   Email as EmailIcon,
@@ -52,8 +56,9 @@ interface Message {
 }
 
 const Meeting: React.FC = () => {
-  const params = useParams<{ meetingId: string }>();
-  const meetingId = params.meetingId || '';
+  const { meetingId } = useParams<{ meetingId: string }>();
+  const navigate = useNavigate();
+  const meetingIdValue = meetingId || '';
   const [socket, setSocket] = useState<Socket | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [peers, setPeers] = useState<PeerConnection[]>([]);
@@ -66,6 +71,7 @@ const Meeting: React.FC = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(true);
+  const [isLeaveDialogOpen, setIsLeaveDialogOpen] = useState(false);
   const [userName, setUserName] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
@@ -91,7 +97,7 @@ const Meeting: React.FC = () => {
           const transcript = event.results[i][0].transcript;
           if (event.results[i].isFinal) {
             finalTranscript += transcript + ' ';
-            socket?.emit('send-transcription', { meetingId, text: finalTranscript });
+            socket?.emit('send-transcription', { meetingId: meetingIdValue, text: finalTranscript });
           }
         }
         if (finalTranscript) {
@@ -104,7 +110,7 @@ const Meeting: React.FC = () => {
         }
       };
     }
-  }, [meetingId, socket]);
+  }, [meetingIdValue, socket]);
 
   // Handle name submission
   const handleNameSubmit = () => {
@@ -182,8 +188,8 @@ const Meeting: React.FC = () => {
       }
 
       // Join room with user information
-      newSocket.emit('join-room', meetingId, newSocket.id, userName);
-      console.log('Joined room:', meetingId, 'as', userName, 'with ID:', newSocket.id);
+      newSocket.emit('join-room', meetingIdValue, newSocket.id, userName);
+      console.log('Joined room:', meetingIdValue, 'as', userName, 'with ID:', newSocket.id);
 
       // Handle existing users in the room
       newSocket.on('get-users', (users: Array<{id: string, userName: string}>) => {
@@ -715,7 +721,7 @@ const Meeting: React.FC = () => {
 
   // Copy meeting link to clipboard
   const copyMeetingLink = () => {
-    const url = `${window.location.origin}/meeting/${meetingId}`;
+    const url = `${window.location.origin}/meeting/${meetingIdValue}`;
     navigator.clipboard.writeText(url)
       .then(() => {
         setSnackbarMessage('Meeting link copied to clipboard');
@@ -730,7 +736,7 @@ const Meeting: React.FC = () => {
 
   // Share meeting via email
   const shareMeetingByEmail = () => {
-    const url = `${window.location.origin}/meeting/${meetingId}`;
+    const url = `${window.location.origin}/meeting/${meetingIdValue}`;
     window.location.href = `mailto:?subject=Join my video meeting&body=Join my meeting: ${url}`;
   };
 
@@ -744,11 +750,42 @@ const Meeting: React.FC = () => {
       .substring(0, 2);
   };
 
+  // Handle leaving the meeting
+  const handleLeaveMeeting = useCallback(() => {
+    console.log('Leaving meeting:', meetingIdValue);
+    
+    // Close all peer connections
+    peersRef.current.forEach(peer => {
+      try {
+        if (peer.peer) {
+          peer.peer.destroy();
+        }
+      } catch (err) {
+        console.error('Error destroying peer connection:', err);
+      }
+    });
+    
+    // Stop local media streams
+    if (stream) {
+      stream.getTracks().forEach(track => {
+        track.stop();
+      });
+    }
+    
+    // Disconnect from socket
+    if (socket) {
+      socket.disconnect();
+    }
+    
+    // Navigate back to home
+    navigate('/');
+  }, [meetingIdValue, stream, socket, navigate]);
+
   return (
     <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       {/* Meeting header */}
       <Box className="meeting-header">
-        <Typography variant="h6">Meeting: {meetingId}</Typography>
+        <Typography variant="h6">Meeting: {meetingIdValue}</Typography>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Badge badgeContent={unreadMessages} color="error">
             <IconButton 
@@ -764,6 +801,22 @@ const Meeting: React.FC = () => {
           <IconButton color="inherit" onClick={() => setIsShareDialogOpen(true)}>
             <ShareIcon />
           </IconButton>
+          <Tooltip title="Leave Meeting">
+            <IconButton 
+              color="error" 
+              onClick={() => setIsLeaveDialogOpen(true)}
+              className="leave-meeting-button"
+              sx={{ 
+                ml: 1,
+                backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                '&:hover': {
+                  backgroundColor: 'rgba(244, 67, 54, 0.2)',
+                }
+              }}
+            >
+              <CallEndIcon />
+            </IconButton>
+          </Tooltip>
         </Box>
       </Box>
 
@@ -877,7 +930,7 @@ const Meeting: React.FC = () => {
             <CloseIcon />
           </IconButton>
         </Box>
-        {socket && <Chat socket={socket} meetingId={meetingId} userName={userName} />}
+        {socket && <Chat socket={socket} meetingId={meetingIdValue} userName={userName} />}
       </Drawer>
 
       {/* Name dialog */}
@@ -926,7 +979,7 @@ const Meeting: React.FC = () => {
           <TextField
             margin="dense"
             fullWidth
-            value={`${window.location.origin}/meeting/${meetingId}`}
+            value={`${window.location.origin}/meeting/${meetingIdValue}`}
             InputProps={{
               readOnly: true,
               endAdornment: (
@@ -954,6 +1007,29 @@ const Meeting: React.FC = () => {
         <DialogActions>
           <Button onClick={() => setIsShareDialogOpen(false)} color="primary">
             Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Leave dialog */}
+      <Dialog 
+        open={isLeaveDialogOpen} 
+        onClose={() => setIsLeaveDialogOpen(false)} 
+        maxWidth="xs" 
+        fullWidth
+      >
+        <DialogTitle>Leave Meeting</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" gutterBottom>
+            Are you sure you want to leave the meeting?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setIsLeaveDialogOpen(false)} color="primary">
+            Cancel
+          </Button>
+          <Button onClick={handleLeaveMeeting} color="error">
+            Leave
           </Button>
         </DialogActions>
       </Dialog>
