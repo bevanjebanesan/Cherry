@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { ThemeProvider, createTheme, CssBaseline } from '@mui/material';
 import Home from './pages/Home';
 import Meeting from './pages/Meeting';
+import Test from './pages/Test';
 import './App.css';
 
 // Create a custom theme with pink color scheme
@@ -47,6 +48,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/meeting/:meetingId" element={<Meeting />} />
+          <Route path="/test" element={<Test />} />
         </Routes>
       </Router>
     </ThemeProvider>
