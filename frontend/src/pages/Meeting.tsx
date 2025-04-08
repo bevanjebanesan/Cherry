@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Box,
@@ -280,29 +280,10 @@ const Meeting: React.FC = () => {
         setSnackbarMessage('Could not access camera/microphone. Joining without media.');
         setSnackbarOpen(true);
       });
-  };
-
-  // Set video reference for a peer
-  const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
-    if (element) {
-      peerVideos.current[peerId] = element;
-      
-      // Find the peer
-      const peer = peers.find(p => p.peerId === peerId);
-      
-      // If we have a stream for this peer, set it to the video element
-      if (peer && peer.stream) {
-        console.log('Setting stream to video element for peer:', peerId);
-        element.srcObject = peer.stream;
-        element.play().catch(err => {
-          console.error(`Error playing video for ${peerId}:`, err);
-        });
-      }
-    }
-  };
+    };
 
   // Create a peer connection to a new user
-  const connectToNewUser = (userId: string, stream: MediaStream | null, remoteUserName: string) => {
+  const connectToNewUser = useCallback((userId: string, stream: MediaStream | null, remoteUserName: string) => {
     console.log('Connecting to new user:', userId, 'Name:', remoteUserName);
     
     // Check if we already have a connection to this peer
@@ -322,10 +303,10 @@ const Meeting: React.FC = () => {
 
     // Add peer to state
     setPeers(users => [...users, { peerId: userId, peer, userName: remoteUserName }]);
-  };
+  }, []);
 
   // Create a peer connection as the initiator
-  const createPeer = (userToSignal: string, stream: MediaStream | null) => {
+  const createPeer = useCallback((userToSignal: string, stream: MediaStream | null) => {
     console.log('Creating peer as initiator for:', userToSignal);
     
     const peer = new Peer({
@@ -423,10 +404,10 @@ const Meeting: React.FC = () => {
     });
 
     return peer;
-  };
+  }, [socket, userName]);
 
   // Add a peer connection as the receiver
-  const addPeer = (incomingSignal: any, callerID: string, stream: MediaStream | null) => {
+  const addPeer = useCallback((incomingSignal: any, callerID: string, stream: MediaStream | null) => {
     console.log('Adding peer as receiver for:', callerID);
     
     const peer = new Peer({
@@ -526,6 +507,159 @@ const Meeting: React.FC = () => {
     }
 
     return peer;
+  }, [socket]);
+
+  // Socket event handlers
+  useEffect(() => {
+    if (!socket) return;
+
+    // Handle when a new user joins the meeting
+    const handleUserJoined = ({ signal, callerID, userName: callerName }: { signal: any, callerID: string, userName: string }) => {
+      console.log('User joined:', callerID, callerName);
+      
+      // Create a peer connection to the new user
+      const peer = addPeer(signal, callerID, stream);
+      
+      peersRef.current.push({
+        peerId: callerID,
+        peer,
+        userName: callerName,
+      });
+
+      // Add peer to state
+      setPeers(prevPeers => [...prevPeers, { peerId: callerID, peer, userName: callerName }]);
+    };
+
+    // Handle when a user returns a signal
+    const handleReceivingReturnedSignal = ({ signal, id }: { signal: any, id: string }) => {
+      console.log('Received returned signal from:', id);
+      const item = peersRef.current.find(p => p.peerId === id);
+      if (item) {
+        try {
+          item.peer.signal(signal);
+        } catch (err) {
+          console.error('Error signaling peer:', err);
+        }
+      } else {
+        console.warn('Could not find peer to signal:', id);
+      }
+    };
+
+    // Handle when a user disconnects
+    const handleUserDisconnected = (userId: string) => {
+      console.log('User disconnected:', userId);
+      
+      // Remove the peer from peersRef
+      peersRef.current = peersRef.current.filter(p => p.peerId !== userId);
+      
+      // Remove the peer from state
+      setPeers(prevPeers => prevPeers.filter(p => p.peerId !== userId));
+      
+      // Remove the peer's video element
+      delete peerVideos.current[userId];
+    };
+
+    // Handle get users event
+    const handleGetUsers = (users: Array<{ userId: string, userName: string }>) => {
+      console.log('Got users:', users);
+      
+      // Connect to each user
+      users.forEach(user => {
+        if (user.userId !== socket.id) {
+          console.log('Connecting to existing user:', user.userId, user.userName);
+          connectToNewUser(user.userId, stream, user.userName);
+        }
+      });
+    };
+
+    // Register event handlers
+    socket.on('user-joined', handleUserJoined);
+    socket.on('receiving-returned-signal', handleReceivingReturnedSignal);
+    socket.on('user-disconnected', handleUserDisconnected);
+    socket.on('get-users', handleGetUsers);
+
+    // Clean up event handlers
+    return () => {
+      socket.off('user-joined', handleUserJoined);
+      socket.off('receiving-returned-signal', handleReceivingReturnedSignal);
+      socket.off('user-disconnected', handleUserDisconnected);
+      socket.off('get-users', handleGetUsers);
+    };
+  }, [socket, stream, addPeer, connectToNewUser]);
+
+  // Set video reference for a peer
+  const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
+    if (element) {
+      peerVideos.current[peerId] = element;
+      
+      // Find the peer
+      const peer = peers.find(p => p.peerId === peerId);
+      
+      // If we have a stream for this peer, set it to the video element
+      if (peer && peer.stream) {
+        console.log('Setting stream to video element for peer:', peerId);
+        element.srcObject = peer.stream;
+        element.play().catch(err => {
+          console.error(`Error playing video for ${peerId}:`, err);
+        });
+      }
+    }
+  };
+
+  // Render a video for a peer
+  const renderPeerVideo = (peer: PeerConnection) => {
+    return (
+      <Box
+        key={peer.peerId}
+        className="video-container"
+        sx={{
+          position: 'relative',
+          width: '100%',
+          height: '100%',
+          borderRadius: '8px',
+          overflow: 'hidden',
+          backgroundColor: 'rgba(0, 0, 0, 0.2)',
+        }}
+      >
+        <video
+          ref={(element) => setPeerVideoRef(peer.peerId, element)}
+          autoPlay
+          playsInline
+          muted={false}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            display: 'block',
+          }}
+        />
+        
+        {/* User info overlay */}
+        <Box
+          className="user-info"
+          sx={{
+            position: 'absolute',
+            bottom: '10px',
+            left: '10px',
+            padding: '5px 10px',
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            color: 'white',
+            borderRadius: '4px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+            zIndex: 2,
+          }}
+        >
+          {!peer.stream || peer.stream.getVideoTracks().length === 0 || !peer.stream.getVideoTracks()[0].enabled ? (
+            <Avatar sx={{ width: 24, height: 24, backgroundColor: 'primary.main', fontSize: '12px' }}>
+              {(peer.userName || 'Guest').charAt(0).toUpperCase()}
+            </Avatar>
+          ) : null}
+          <Typography variant="body2">{peer.userName || 'Guest'}</Typography>
+        </Box>
+      </Box>
+    );
   };
 
   // Toggle mute
@@ -669,45 +803,7 @@ const Meeting: React.FC = () => {
           </Box>
 
           {/* Remote videos */}
-          {peers.map((peer) => (
-            <Box key={peer.peerId} className="video-container">
-              <video
-                ref={(element) => setPeerVideoRef(peer.peerId, element)}
-                autoPlay
-                playsInline
-                muted={false}
-                style={{ 
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'cover',
-                  display: peer.stream && peer.stream.getVideoTracks().length > 0 ? 'block' : 'none'
-                }}
-              />
-              {(!peer.stream || peer.stream.getVideoTracks().length === 0 || 
-                (peer.stream.getVideoTracks().length > 0 && !peer.stream.getVideoTracks()[0].enabled)) && (
-                <Box sx={{ 
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  justifyContent: 'center',
-                  bgcolor: '#1a1a1a'
-                }}>
-                  <Avatar sx={{ width: 80, height: 80, bgcolor: '#9c27b0' }}>
-                    {getInitials(peer.userName || 'Guest')}
-                  </Avatar>
-                </Box>
-              )}
-              <Box className="user-info">
-                {peer.userName || 'Guest'} 
-                {peer.stream && peer.stream.getAudioTracks().length > 0 && 
-                 !peer.stream.getAudioTracks()[0].enabled && <MicOffIcon fontSize="small" />}
-              </Box>
-            </Box>
-          ))}
+          {peers.map((peer) => renderPeerVideo(peer))}
         </Box>
 
         {/* Transcription overlay */}
