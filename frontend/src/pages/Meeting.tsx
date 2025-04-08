@@ -367,12 +367,13 @@ const Meeting: React.FC = () => {
     peer.on('stream', (currentStream) => {
       console.log('Received stream as initiator from:', userToSignal, 'Stream ID:', currentStream.id, 'Tracks:', currentStream.getTracks().length);
       
-      // Update the peer object with the stream
+      // Store the stream in the peer object
       const peerObj = peersRef.current.find(p => p.peerId === userToSignal);
       if (peerObj) {
         peerObj.stream = currentStream;
       }
       
+      // Update the peers state with the new stream
       setPeers(prevPeers => 
         prevPeers.map(p => 
           p.peerId === userToSignal 
@@ -385,14 +386,36 @@ const Meeting: React.FC = () => {
       if (peerVideos.current[userToSignal]) {
         console.log('Setting stream to existing video element for peer:', userToSignal);
         peerVideos.current[userToSignal].srcObject = currentStream;
-        peerVideos.current[userToSignal].play().catch(err => {
-          console.error(`Error playing video for ${userToSignal}:`, err);
-        });
+        
+        // Force play the video
+        const playPromise = peerVideos.current[userToSignal].play();
+        if (playPromise !== undefined) {
+          playPromise.catch(err => {
+            console.error(`Error playing video for ${userToSignal}:`, err);
+            // Try again after a short delay
+            setTimeout(() => {
+              if (peerVideos.current[userToSignal]) {
+                peerVideos.current[userToSignal].play().catch(e => console.error(`Retry play failed for ${userToSignal}:`, e));
+              }
+            }, 1000);
+          });
+        }
+      } else {
+        console.warn('Video element not found for peer:', userToSignal);
       }
     });
 
     peer.on('track', (track, stream) => {
-      console.log('Received track as initiator from:', userToSignal, 'Track kind:', track.kind);
+      console.log('Received track as initiator from:', userToSignal, 'Track kind:', track.kind, 'Track ID:', track.id);
+      
+      // For debugging, log the track's constraints and settings
+      console.log('Track constraints:', track.getConstraints());
+      console.log('Track settings:', track.getSettings());
+      
+      // Listen for track mute/unmute events
+      track.onmute = () => console.log(`Track ${track.id} muted`);
+      track.onunmute = () => console.log(`Track ${track.id} unmuted`);
+      track.onended = () => console.log(`Track ${track.id} ended`);
     });
 
     peer.on('error', (err) => {
@@ -463,12 +486,13 @@ const Meeting: React.FC = () => {
     peer.on('stream', (currentStream) => {
       console.log('Received stream as receiver from:', callerID, 'Stream ID:', currentStream.id, 'Tracks:', currentStream.getTracks().length);
       
-      // Update the peer object with the stream
+      // Store the stream in the peer object
       const peerObj = peersRef.current.find(p => p.peerId === callerID);
       if (peerObj) {
         peerObj.stream = currentStream;
       }
       
+      // Update the peers state with the new stream
       setPeers(prevPeers => 
         prevPeers.map(p => 
           p.peerId === callerID 
@@ -481,14 +505,36 @@ const Meeting: React.FC = () => {
       if (peerVideos.current[callerID]) {
         console.log('Setting stream to existing video element for peer:', callerID);
         peerVideos.current[callerID].srcObject = currentStream;
-        peerVideos.current[callerID].play().catch(err => {
-          console.error(`Error playing video for ${callerID}:`, err);
-        });
+        
+        // Force play the video
+        const playPromise = peerVideos.current[callerID].play();
+        if (playPromise !== undefined) {
+          playPromise.catch(err => {
+            console.error(`Error playing video for ${callerID}:`, err);
+            // Try again after a short delay
+            setTimeout(() => {
+              if (peerVideos.current[callerID]) {
+                peerVideos.current[callerID].play().catch(e => console.error(`Retry play failed for ${callerID}:`, e));
+              }
+            }, 1000);
+          });
+        }
+      } else {
+        console.warn('Video element not found for peer:', callerID);
       }
     });
 
     peer.on('track', (track, stream) => {
-      console.log('Received track as receiver from:', callerID, 'Track kind:', track.kind);
+      console.log('Received track as receiver from:', callerID, 'Track kind:', track.kind, 'Track ID:', track.id);
+      
+      // For debugging, log the track's constraints and settings
+      console.log('Track constraints:', track.getConstraints());
+      console.log('Track settings:', track.getSettings());
+      
+      // Listen for track mute/unmute events
+      track.onmute = () => console.log(`Track ${track.id} muted`);
+      track.onunmute = () => console.log(`Track ${track.id} unmuted`);
+      track.onended = () => console.log(`Track ${track.id} ended`);
     });
 
     peer.on('error', (err) => {
@@ -590,6 +636,7 @@ const Meeting: React.FC = () => {
   // Set video reference for a peer
   const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
     if (element) {
+      console.log(`Setting video ref for peer ${peerId}`, element);
       peerVideos.current[peerId] = element;
       
       // Find the peer
@@ -597,17 +644,34 @@ const Meeting: React.FC = () => {
       
       // If we have a stream for this peer, set it to the video element
       if (peer && peer.stream) {
-        console.log('Setting stream to video element for peer:', peerId);
+        console.log('Setting stream to video element for peer:', peerId, 'Stream ID:', peer.stream.id);
         element.srcObject = peer.stream;
-        element.play().catch(err => {
-          console.error(`Error playing video for ${peerId}:`, err);
-        });
+        
+        // Force play the video
+        const playPromise = element.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(err => {
+            console.error(`Error playing video for ${peerId}:`, err);
+            // Try again after a short delay
+            setTimeout(() => {
+              if (peerVideos.current[peerId]) {
+                peerVideos.current[peerId].play().catch(e => console.error(`Retry play failed for ${peerId}:`, e));
+              }
+            }, 1000);
+          });
+        }
+      } else {
+        console.log(`No stream available yet for peer ${peerId}`);
       }
     }
   };
 
   // Render a video for a peer
   const renderPeerVideo = (peer: PeerConnection) => {
+    const hasVideo = peer.stream && 
+                    peer.stream.getVideoTracks().length > 0 && 
+                    peer.stream.getVideoTracks()[0].enabled;
+                    
     return (
       <Box
         key={peer.peerId}
@@ -622,6 +686,7 @@ const Meeting: React.FC = () => {
         }}
       >
         <video
+          key={`video-${peer.peerId}-${peer.stream?.id || 'no-stream'}`}
           ref={(element) => setPeerVideoRef(peer.peerId, element)}
           autoPlay
           playsInline
@@ -651,11 +716,11 @@ const Meeting: React.FC = () => {
             zIndex: 2,
           }}
         >
-          {!peer.stream || peer.stream.getVideoTracks().length === 0 || !peer.stream.getVideoTracks()[0].enabled ? (
+          {!hasVideo && (
             <Avatar sx={{ width: 24, height: 24, backgroundColor: 'primary.main', fontSize: '12px' }}>
               {(peer.userName || 'Guest').charAt(0).toUpperCase()}
             </Avatar>
-          ) : null}
+          )}
           <Typography variant="body2">{peer.userName || 'Guest'}</Typography>
         </Box>
       </Box>

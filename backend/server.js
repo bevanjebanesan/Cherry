@@ -45,7 +45,7 @@ const io = new Server(server, {
 
 // In-memory storage for meetings
 const meetings = {};
-const users = {};
+const users = [];
 
 // Socket.io event handlers
 io.on('connection', (socket) => {
@@ -94,11 +94,11 @@ io.on('connection', (socket) => {
       };
       
       // Store user info
-      users[socket.id] = {
+      users.push({
         userId: socket.id,
         userName: userName,
         meetingId: meetingId
-      };
+      });
       
       // Join the socket room
       socket.join(meetingId);
@@ -142,11 +142,11 @@ io.on('connection', (socket) => {
       };
       
       // Store user info
-      users[socket.id] = {
+      users.push({
         userId: socket.id,
         userName: userName,
         meetingId: meetingId
-      };
+      });
       
       // Join the socket room
       socket.join(meetingId);
@@ -174,27 +174,42 @@ io.on('connection', (socket) => {
     }
   });
   
+  // Handle sending signals between peers
   socket.on('sending-signal', (payload) => {
     const { userToSignal, callerID, signal, userName } = payload;
-    console.log(`User ${callerID} (${userName}) sending signal to ${userToSignal}`);
+    console.log(`User ${callerID} (${userName}) is sending signal to ${userToSignal}`);
     
-    // Make sure the user to signal exists
-    if (io.sockets.sockets.has(userToSignal)) {
-      io.to(userToSignal).emit('user-joined', { signal, callerID, userName });
+    // Find the user to signal
+    const user = users.find(user => user.userId === userToSignal);
+    
+    if (user) {
+      io.to(userToSignal).emit('user-joined', { 
+        signal, 
+        callerID, 
+        userName 
+      });
+      console.log(`Signal sent to ${userToSignal} successfully`);
     } else {
-      console.log(`User ${userToSignal} not found, cannot send signal`);
+      console.warn(`Cannot send signal to ${userToSignal} - user not found`);
     }
   });
-  
+
+  // Handle returning signals between peers
   socket.on('returning-signal', (payload) => {
     const { signal, callerID } = payload;
-    console.log(`User ${socket.id} returning signal to ${callerID}`);
+    console.log(`User ${socket.id} is returning signal to ${callerID}`);
     
-    // Make sure the caller ID exists
-    if (io.sockets.sockets.has(callerID)) {
-      io.to(callerID).emit('receiving-returned-signal', { signal, id: socket.id });
+    // Find the caller
+    const caller = users.find(user => user.userId === callerID);
+    
+    if (caller) {
+      io.to(callerID).emit('receiving-returned-signal', { 
+        signal, 
+        id: socket.id 
+      });
+      console.log(`Return signal sent to ${callerID} successfully`);
     } else {
-      console.log(`User ${callerID} not found, cannot return signal`);
+      console.warn(`Cannot return signal to ${callerID} - user not found`);
     }
   });
   
@@ -216,7 +231,7 @@ io.on('connection', (socket) => {
   });
   
   socket.on('send-transcription', ({ meetingId, text }) => {
-    const user = users[socket.id];
+    const user = users.find(user => user.userId === socket.id);
     if (user && meetings[meetingId]) {
       console.log(`Transcription in room ${meetingId} from ${user.userName}: ${text}`);
       io.to(meetingId).emit('receive-transcription', { 
@@ -227,49 +242,43 @@ io.on('connection', (socket) => {
     }
   });
   
-  socket.on('disconnect', async () => {
-    console.log(`User disconnected: ${socket.id}`);
+  // Handle user disconnection
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
     
-    if (socket.meetingId) {
-      const meetingId = socket.meetingId;
-      const userName = socket.userName;
+    // Find the user
+    const userIndex = users.findIndex(user => user.userId === socket.id);
+    
+    if (userIndex !== -1) {
+      const user = users[userIndex];
+      const meetingId = user.meetingId;
       
-      try {
-        // Update MongoDB if possible
-        if (meetings[meetingId]?.participants[socket.id]?.mongoUserId) {
-          const userId = meetings[meetingId].participants[socket.id].mongoUserId;
-          const meeting = await Meeting.findOne({ meetingId });
-          
-          if (meeting) {
-            // Remove the user from the meeting participants
-            meeting.participants = meeting.participants.filter(
-              participant => participant.toString() !== userId.toString()
-            );
-            await meeting.save();
-            console.log(`Removed ${userName} from MongoDB meeting ${meetingId}`);
-          }
+      console.log(`User ${user.userName} (${socket.id}) disconnected from meeting ${meetingId}`);
+      
+      // Remove user from the users array
+      users.splice(userIndex, 1);
+      
+      // Notify other users in the meeting
+      socket.to(meetingId).emit('user-disconnected', socket.id);
+      
+      // Update meeting participants if the meeting exists
+      if (meetings[meetingId]) {
+        // Remove user from participants
+        const participantIndex = meetings[meetingId].participants.findIndex(p => p.userId === socket.id);
+        if (participantIndex !== -1) {
+          meetings[meetingId].participants.splice(participantIndex, 1);
+          console.log(`Removed user ${socket.id} from meeting ${meetingId} participants`);
         }
         
-        // Remove from in-memory storage
-        if (meetings[meetingId] && meetings[meetingId].participants[socket.id]) {
-          delete meetings[meetingId].participants[socket.id];
-          console.log(`Removed ${userName} from in-memory meeting ${meetingId}`);
-          
-          // Notify others that the user has disconnected
-          socket.to(meetingId).emit('user-disconnected', socket.id);
-        }
-      } catch (error) {
-        console.error('Error handling disconnect:', error);
-        
-        // Fallback to in-memory only
-        if (meetings[meetingId] && meetings[meetingId].participants[socket.id]) {
-          delete meetings[meetingId].participants[socket.id];
-          console.log(`Fallback: Removed ${userName} from in-memory meeting ${meetingId}`);
-          
-          // Notify others that the user has disconnected
-          socket.to(meetingId).emit('user-disconnected', socket.id);
+        // If no participants left, consider cleaning up the meeting
+        if (meetings[meetingId].participants.length === 0) {
+          console.log(`Meeting ${meetingId} has no participants left, marking for cleanup`);
+          // You could delete the meeting here or mark it for cleanup
+          // For now, we'll keep it for history
         }
       }
+    } else {
+      console.log(`User ${socket.id} disconnected but was not found in users array`);
     }
   });
 });
