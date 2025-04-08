@@ -153,6 +153,13 @@ io.on('connection', (socket) => {
   });
 });
 
+// Test endpoint to verify API connectivity
+app.get('/api/test', (req, res) => {
+  console.log('Test endpoint called');
+  res.header('Access-Control-Allow-Origin', '*');
+  res.json({ message: 'Backend API is working!' });
+});
+
 // API routes
 app.post('/api/meetings/create', (req, res) => {
   console.log('Received request to create meeting');
