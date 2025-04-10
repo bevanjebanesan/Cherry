@@ -108,6 +108,14 @@ app.get('/api/test', (req, res) => {
   res.json({ message: 'API is working!' });
 });
 
+// Create meeting endpoint
+app.post('/api/meetings/create', (req, res) => {
+  console.log('Create meeting endpoint called');
+  const meetingId = Math.random().toString(36).substring(2, 12);
+  console.log(`Created meeting with ID: ${meetingId}`);
+  res.json({ meetingId });
+});
+
 // MongoDB connection
 if (process.env.MONGO_URI || process.env.MONGODB_URI) {
   const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
