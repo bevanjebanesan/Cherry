@@ -568,21 +568,58 @@ const Meeting: React.FC = () => {
 
   // Set video reference for a peer
   const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
-    if (element && !element.srcObject) {
+    if (element) {
+      // Store the element in our ref map
+      peerVideos.current[peerId] = element;
+      
+      // Find the peer
       const peer = peers.find(p => p.peerId === peerId);
+      
+      // If we have a stream for this peer, set it to the video element
       if (peer && peer.stream) {
-        console.log('Setting stream to video element for peer:', peerId);
-        element.srcObject = peer.stream;
-        element.play().catch(err => {
-          console.error(`Error playing video for ${peerId}:`, err);
-        });
+        console.log('Setting stream to video element for peer:', peerId, 'Tracks:', peer.stream.getTracks().length);
+        
+        // Only set if not already set to avoid unnecessary reattachment
+        if (element.srcObject !== peer.stream) {
+          element.srcObject = peer.stream;
+          
+          // Add event listeners to handle playback issues
+          element.onloadedmetadata = () => {
+            console.log('Video metadata loaded for peer:', peerId);
+            element.play().catch(err => {
+              console.error(`Error playing video for ${peerId}:`, err);
+            });
+          };
+          
+          // Try to play the video
+          element.play().catch(err => {
+            console.error(`Error playing video for ${peerId}:`, err);
+          });
+        }
       } else {
         console.log('No stream available yet for peer:', peerId);
       }
     }
   };
 
-  // Render a video for a peer
+  // Effect to update video elements when peers change
+  useEffect(() => {
+    console.log('Peers updated:', peers.length);
+    
+    // Update video elements for all peers
+    peers.forEach(peer => {
+      const videoElement = peerVideos.current[peer.peerId];
+      if (videoElement && peer.stream && videoElement.srcObject !== peer.stream) {
+        console.log('Updating video element for peer:', peer.peerId);
+        videoElement.srcObject = peer.stream;
+        videoElement.play().catch(err => {
+          console.error(`Error playing video for ${peer.peerId}:`, err);
+        });
+      }
+    });
+  }, [peers]);
+
+  // Render a peer video
   const renderPeerVideo = (peer: PeerConnection) => {
     return (
       <Box
@@ -590,14 +627,14 @@ const Meeting: React.FC = () => {
         className="video-container"
         sx={{
           position: 'relative',
-          width: '100%',
-          height: '100%',
           borderRadius: '8px',
           overflow: 'hidden',
-          backgroundColor: 'rgba(0, 0, 0, 0.2)',
+          backgroundColor: '#1a1a1a',
         }}
       >
+        {/* Video element */}
         <video
+          key={`video-${peer.peerId}`}
           ref={(element) => setPeerVideoRef(peer.peerId, element)}
           autoPlay
           playsInline
@@ -609,6 +646,37 @@ const Meeting: React.FC = () => {
             display: 'block',
           }}
         />
+        
+        {/* Fallback when no video */}
+        {(!peer.stream || 
+          !peer.stream.getVideoTracks().length || 
+          !peer.stream.getVideoTracks()[0].enabled) && (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: '#1a1a1a',
+              zIndex: 1,
+            }}
+          >
+            <Avatar
+              sx={{
+                width: '80px',
+                height: '80px',
+                fontSize: '32px',
+                backgroundColor: 'primary.main',
+              }}
+            >
+              {(peer.userName || 'Guest').charAt(0).toUpperCase()}
+            </Avatar>
+          </Box>
+        )}
         
         {/* User info overlay */}
         <Box
@@ -627,11 +695,6 @@ const Meeting: React.FC = () => {
             zIndex: 2,
           }}
         >
-          {!peer.stream || peer.stream.getVideoTracks().length === 0 || !peer.stream.getVideoTracks()[0].enabled ? (
-            <Avatar sx={{ width: 24, height: 24, backgroundColor: 'primary.main', fontSize: '12px' }}>
-              {(peer.userName || 'Guest').charAt(0).toUpperCase()}
-            </Avatar>
-          ) : null}
           <Typography variant="body2">{peer.userName || 'Guest'}</Typography>
         </Box>
       </Box>
