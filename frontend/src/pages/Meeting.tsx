@@ -340,12 +340,12 @@ const Meeting: React.FC = () => {
     }
   }, [meetingIdValue, userName, socket]);
 
-  // Create a peer connection to a new user
-  const connectToNewUser = useCallback((userId: string, stream: MediaStream | null, remoteUserName: string) => {
-    console.log('Connecting to new user:', userId, 'Name:', remoteUserName);
+  // Connect to a new user
+  const connectToNewUser = useCallback((userToSignal: string, stream: MediaStream | null, remoteUserName: string) => {
+    console.log('Connecting to new user:', userToSignal, 'Name:', remoteUserName);
     
     // Check if we already have a connection to this peer
-    const existingPeer = peersRef.current.find(p => p.peerId === userId);
+    const existingPeer = peersRef.current.find(p => p.peerId === userToSignal);
     if (existingPeer) {
       console.log('Already connected to this peer, skipping');
       return existingPeer.peer;
@@ -395,11 +395,11 @@ const Meeting: React.FC = () => {
 
     // Handle peer events
     peer.on('signal', (data) => {
-      console.log('Generated signal as initiator for:', userId);
+      console.log('Generated signal as initiator for:', userToSignal);
       if (socket) {
         socket.send(JSON.stringify({
           type: 'sending-signal',
-          userToSignal: userId,
+          userToSignal: userToSignal,
           callerID: myId.current,
           signal: data,
           userName,
@@ -408,47 +408,63 @@ const Meeting: React.FC = () => {
     });
 
     peer.on('connect', () => {
-      console.log('Peer connection established with:', userId);
+      console.log('Peer connection established with:', userToSignal);
     });
 
     peer.on('error', (err) => {
-      console.error('Peer connection error with:', userId, err);
+      console.error('Peer connection error with:', userToSignal, err);
     });
 
     peer.on('close', () => {
-      console.log('Peer connection closed with:', userId);
+      console.log('Peer connection closed with:', userToSignal);
     });
 
+    // Critical: Handle the 'stream' event to receive remote streams
     peer.on('stream', (remoteStream) => {
-      console.log('Received stream from peer:', userId, 'Tracks:', remoteStream.getTracks().length);
+      console.log('Received stream from peer:', userToSignal, 'Tracks:', remoteStream.getTracks().length);
+      console.log('Video tracks:', remoteStream.getVideoTracks().length);
+      console.log('Audio tracks:', remoteStream.getAudioTracks().length);
       
       // Update peers state with the stream
       setPeers(prevPeers => {
-        return prevPeers.map(p => {
-          if (p.peerId === userId) {
-            console.log('Updating peer with stream:', userId);
+        const updatedPeers = prevPeers.map(p => {
+          if (p.peerId === userToSignal) {
+            console.log('Updating peer with stream:', userToSignal);
             return { ...p, stream: remoteStream };
           }
           return p;
         });
+        return updatedPeers;
       });
       
       // Also update the ref
-      const peerRef = peersRef.current.find(p => p.peerId === userId);
+      const peerRef = peersRef.current.find(p => p.peerId === userToSignal);
       if (peerRef) {
         peerRef.stream = remoteStream;
+      }
+      
+      // Directly set the stream to the video element if it exists
+      const videoElement = peerVideos.current[userToSignal];
+      if (videoElement) {
+        console.log('Directly setting stream to existing video element for peer:', userToSignal);
+        videoElement.srcObject = remoteStream;
+        videoElement.play().catch(err => {
+          console.error(`Error playing video for ${userToSignal}:`, err);
+        });
+      } else {
+        console.log('Video element not yet available for peer:', userToSignal);
       }
     });
 
     // Store the peer in refs
     peersRef.current.push({
-      peerId: userId,
+      peerId: userToSignal,
       peer,
       userName: remoteUserName,
     });
 
     // Add the peer to state
-    setPeers(prevPeers => [...prevPeers, { peerId: userId, peer, userName: remoteUserName }]);
+    setPeers(prevPeers => [...prevPeers, { peerId: userToSignal, peer, userName: remoteUserName }]);
 
     return peer;
   }, [socket, userName]);
@@ -542,24 +558,40 @@ const Meeting: React.FC = () => {
       console.log('Peer connection closed with:', callerID);
     });
 
+    // Critical: Handle the 'stream' event to receive remote streams
     peer.on('stream', (remoteStream) => {
       console.log('Received stream from peer:', callerID, 'Tracks:', remoteStream.getTracks().length);
+      console.log('Video tracks:', remoteStream.getVideoTracks().length);
+      console.log('Audio tracks:', remoteStream.getAudioTracks().length);
       
       // Update peers state with the stream
       setPeers(prevPeers => {
-        return prevPeers.map(p => {
+        const updatedPeers = prevPeers.map(p => {
           if (p.peerId === callerID) {
             console.log('Updating peer with stream:', callerID);
             return { ...p, stream: remoteStream };
           }
           return p;
         });
+        return updatedPeers;
       });
       
       // Also update the ref
       const peerRef = peersRef.current.find(p => p.peerId === callerID);
       if (peerRef) {
         peerRef.stream = remoteStream;
+      }
+      
+      // Directly set the stream to the video element if it exists
+      const videoElement = peerVideos.current[callerID];
+      if (videoElement) {
+        console.log('Directly setting stream to existing video element for peer:', callerID);
+        videoElement.srcObject = remoteStream;
+        videoElement.play().catch(err => {
+          console.error(`Error playing video for ${callerID}:`, err);
+        });
+      } else {
+        console.log('Video element not yet available for peer:', callerID);
       }
     });
 
@@ -569,15 +601,19 @@ const Meeting: React.FC = () => {
   // Set video reference for a peer
   const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
     if (element) {
+      console.log('Setting video ref for peer:', peerId);
+      
       // Store the element in our ref map
       peerVideos.current[peerId] = element;
       
-      // Find the peer
+      // Find the peer and its stream
       const peer = peers.find(p => p.peerId === peerId);
       
       // If we have a stream for this peer, set it to the video element
       if (peer && peer.stream) {
         console.log('Setting stream to video element for peer:', peerId, 'Tracks:', peer.stream.getTracks().length);
+        console.log('Video tracks:', peer.stream.getVideoTracks().length);
+        console.log('Audio tracks:', peer.stream.getAudioTracks().length);
         
         // Only set if not already set to avoid unnecessary reattachment
         if (element.srcObject !== peer.stream) {
@@ -602,25 +638,15 @@ const Meeting: React.FC = () => {
     }
   };
 
-  // Effect to update video elements when peers change
-  useEffect(() => {
-    console.log('Peers updated:', peers.length);
-    
-    // Update video elements for all peers
-    peers.forEach(peer => {
-      const videoElement = peerVideos.current[peer.peerId];
-      if (videoElement && peer.stream && videoElement.srcObject !== peer.stream) {
-        console.log('Updating video element for peer:', peer.peerId);
-        videoElement.srcObject = peer.stream;
-        videoElement.play().catch(err => {
-          console.error(`Error playing video for ${peer.peerId}:`, err);
-        });
-      }
-    });
-  }, [peers]);
-
   // Render a peer video
   const renderPeerVideo = (peer: PeerConnection) => {
+    console.log('Rendering peer video for:', peer.peerId, 'Has stream:', !!peer.stream);
+    if (peer.stream) {
+      console.log('Stream tracks:', peer.stream.getTracks().length);
+      console.log('Video tracks:', peer.stream.getVideoTracks().length);
+      console.log('Audio tracks:', peer.stream.getAudioTracks().length);
+    }
+    
     return (
       <Box
         key={peer.peerId}
