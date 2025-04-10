@@ -108,15 +108,18 @@ app.get('/api/test', (req, res) => {
   res.json({ message: 'API is working!' });
 });
 
-// Optional MongoDB setup if you're persisting meetings
-mongoose
-  .connect(process.env.MONGO_URI || "mongodb://localhost:27017/videoapp")
-  .then(() => {
-    console.log("MongoDB connected");
-    server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-  })
-  .catch((err) => {
-    console.error("MongoDB connection error:", err);
-    console.log("Starting server without MongoDB...");
-    server.listen(PORT, () => console.log(`Server running on port ${PORT} (without MongoDB)`));
-  });
+// MongoDB connection
+if (process.env.MONGO_URI || process.env.MONGODB_URI) {
+  const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
+  mongoose
+    .connect(mongoUri)
+    .then(() => console.log("MongoDB connected"))
+    .catch((err) => {
+      console.error("MongoDB connection error:", err);
+      console.log("Starting server without MongoDB...");
+    });
+} else {
+  console.log("No MongoDB URI provided. Starting server without MongoDB...");
+}
+
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
