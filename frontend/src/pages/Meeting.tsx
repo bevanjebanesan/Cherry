@@ -140,30 +140,47 @@ const Meeting: React.FC = () => {
         // Connect to each existing user
         data.users.forEach((user: { id: string, userName: string }) => {
           if (user.id !== myId.current) {
-            connectToNewUser(user.id, stream, user.userName);
+            // Check if we already have a connection to this user
+            const existingPeer = peersRef.current.find(p => p.peerId === user.id);
+            if (!existingPeer) {
+              connectToNewUser(user.id, stream, user.userName);
+            }
           }
         });
       } else if (data.type === 'user-connected') {
         // Handle new user connected
         console.log('New user connected:', data.userId, 'Name:', data.userName);
-        // Delay connection slightly to ensure both sides are ready
-        setTimeout(() => {
-          connectToNewUser(data.userId, stream, data.userName);
-        }, 1000);
+        
+        // Check if we already have a connection to this user
+        const existingPeer = peersRef.current.find(p => p.peerId === data.userId);
+        if (!existingPeer) {
+          // Delay connection slightly to ensure both sides are ready
+          setTimeout(() => {
+            connectToNewUser(data.userId, stream, data.userName);
+          }, 1000);
+        }
       } else if (data.type === 'user-joined') {
         // Handle user joined with signal
         console.log('User joined with signal:', data.callerID, 'Name:', data.userName);
-        const peer = addPeer(data.signal, data.callerID, stream);
         
-        // Store the peer connection
-        peersRef.current.push({
-          peerId: data.callerID,
-          peer,
-          userName: data.userName,
-        });
+        // Check if we already have a connection to this user
+        const existingPeer = peersRef.current.find(p => p.peerId === data.callerID);
+        if (existingPeer) {
+          console.log('Already have a connection to this user, updating signal');
+          existingPeer.peer.signal(data.signal);
+        } else {
+          const peer = addPeer(data.signal, data.callerID, stream);
+          
+          // Store the peer connection
+          peersRef.current.push({
+            peerId: data.callerID,
+            peer,
+            userName: data.userName,
+          });
 
-        // Add the peer to state with or without stream
-        setPeers((users) => [...users, { peerId: data.callerID, peer, userName: data.userName }]);
+          // Add the peer to state with or without stream
+          setPeers((users) => [...users, { peerId: data.callerID, peer, userName: data.userName }]);
+        }
       } else if (data.type === 'receiving-returned-signal') {
         // Handle receiving returned signal
         console.log('Received returned signal from:', data.id);
@@ -257,42 +274,82 @@ const Meeting: React.FC = () => {
       audio: true,
     };
 
+    // First try with ideal constraints
     navigator.mediaDevices.getUserMedia(constraints)
       .then((currentStream) => {
-        console.log('Got local media stream:', currentStream.getTracks().length, 'tracks');
-        
-        // Set local stream and video
-        setStream(currentStream);
-        
-        // Set local video element
-        if (userVideo.current) {
-          userVideo.current.srcObject = currentStream;
-          userVideo.current.muted = true; // Mute local video to prevent feedback
-          userVideo.current.play().catch(err => {
-            console.error('Error playing local video:', err);
-          });
-        }
-
-        // Join room with user information
-        if (socket) {
-          socket.send(JSON.stringify({
-            type: 'join-room',
-            meetingId: meetingIdValue,
-            userId: myId.current,
-            userName,
-          }));
-          console.log('Joined room:', meetingIdValue, 'as', userName, 'with ID:', myId.current);
-        }
+        handleMediaSuccess(currentStream);
       })
       .catch((error) => {
-        console.error('Error accessing media devices:', error);
-        alert('Error accessing camera or microphone. Please check your permissions and try again.');
+        console.error('Error accessing media devices with ideal constraints:', error);
+        console.log('Trying with basic constraints...');
+        
+        // If that fails, try with basic constraints
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+          .then((currentStream) => {
+            handleMediaSuccess(currentStream);
+          })
+          .catch((basicError) => {
+            console.error('Error accessing media devices with basic constraints:', basicError);
+            
+            // If that also fails, try with audio only
+            console.log('Trying with audio only...');
+            navigator.mediaDevices.getUserMedia({ audio: true })
+              .then((audioStream) => {
+                handleMediaSuccess(audioStream);
+                setIsVideoOff(true); // Mark video as off since we're audio-only
+              })
+              .catch((audioError) => {
+                console.error('Error accessing audio devices:', audioError);
+                
+                // Join without media as a last resort
+                console.log('Joining without media');
+                handleMediaSuccess(null);
+                setIsVideoOff(true);
+                setIsMuted(true);
+                alert('Could not access camera or microphone. Joining meeting without media.');
+              });
+          });
       });
+  }, [meetingIdValue, userName, socket]);
+
+  // Handle successful media acquisition
+  const handleMediaSuccess = useCallback((currentStream: MediaStream | null) => {
+    console.log('Got media stream:', currentStream ? currentStream.getTracks().length + ' tracks' : 'no stream');
+    
+    // Set local stream
+    setStream(currentStream);
+    
+    // Set local video element if we have a stream
+    if (currentStream && userVideo.current) {
+      userVideo.current.srcObject = currentStream;
+      userVideo.current.muted = true; // Mute local video to prevent feedback
+      userVideo.current.play().catch(err => {
+        console.error('Error playing local video:', err);
+      });
+    }
+
+    // Join room with user information
+    if (socket) {
+      socket.send(JSON.stringify({
+        type: 'join-room',
+        meetingId: meetingIdValue,
+        userId: myId.current,
+        userName,
+      }));
+      console.log('Joined room:', meetingIdValue, 'as', userName, 'with ID:', myId.current);
+    }
   }, [meetingIdValue, userName, socket]);
 
   // Create a peer connection to a new user
   const connectToNewUser = useCallback((userId: string, stream: MediaStream | null, remoteUserName: string) => {
     console.log('Connecting to new user:', userId, 'Name:', remoteUserName);
+    
+    // Check if we already have a connection to this peer
+    const existingPeer = peersRef.current.find(p => p.peerId === userId);
+    if (existingPeer) {
+      console.log('Already connected to this peer, skipping');
+      return existingPeer.peer;
+    }
     
     const peer = new Peer({
       initiator: true,
@@ -302,15 +359,38 @@ const Meeting: React.FC = () => {
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
+          {
+            urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+            username: 'f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d',
+            credential: 'w1WpauEiFbhP61/V5WzHo/6qtXgDO4jllb5MByAh0+8='
+          },
+          {
+            urls: 'turn:global.turn.twilio.com:3478?transport=tcp',
+            username: 'f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d',
+            credential: 'w1WpauEiFbhP61/V5WzHo/6qtXgDO4jllb5MByAh0+8='
+          },
+          {
+            urls: 'turn:global.turn.twilio.com:443?transport=tcp',
+            username: 'f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d',
+            credential: 'w1WpauEiFbhP61/V5WzHo/6qtXgDO4jllb5MByAh0+8='
+          }
         ]
       }
     });
 
     // Add the stream to the peer if available
     if (stream) {
-      stream.getTracks().forEach(track => {
-        peer.addTrack(track, stream);
-      });
+      try {
+        stream.getTracks().forEach(track => {
+          peer.addTrack(track, stream);
+        });
+        console.log('Added local tracks to peer:', stream.getTracks().length);
+      } catch (err) {
+        console.error('Error adding tracks to peer:', err);
+      }
+    } else {
+      console.log('No local stream to add to peer');
     }
 
     // Handle peer events
@@ -340,17 +420,24 @@ const Meeting: React.FC = () => {
     });
 
     peer.on('stream', (remoteStream) => {
-      console.log('Received stream from peer:', userId);
+      console.log('Received stream from peer:', userId, 'Tracks:', remoteStream.getTracks().length);
       
       // Update peers state with the stream
       setPeers(prevPeers => {
         return prevPeers.map(p => {
           if (p.peerId === userId) {
+            console.log('Updating peer with stream:', userId);
             return { ...p, stream: remoteStream };
           }
           return p;
         });
       });
+      
+      // Also update the ref
+      const peerRef = peersRef.current.find(p => p.peerId === userId);
+      if (peerRef) {
+        peerRef.stream = remoteStream;
+      }
     });
 
     // Store the peer in refs
@@ -370,23 +457,58 @@ const Meeting: React.FC = () => {
   const addPeer = useCallback((incomingSignal: any, callerID: string, stream: MediaStream | null) => {
     console.log('Adding peer as receiver for:', callerID);
     
+    // Check if we already have a connection to this peer
+    const existingPeer = peersRef.current.find(p => p.peerId === callerID);
+    if (existingPeer) {
+      console.log('Already have a connection to this peer, updating signal');
+      try {
+        existingPeer.peer.signal(incomingSignal);
+      } catch (err) {
+        console.error('Error signaling existing peer:', err);
+      }
+      return existingPeer.peer;
+    }
+    
     const peer = new Peer({
       initiator: false,
-      trickle: true, // Enable trickle ICE for faster connections
+      trickle: true,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478?transport=udp' },
+          {
+            urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+            username: 'f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d',
+            credential: 'w1WpauEiFbhP61/V5WzHo/6qtXgDO4jllb5MByAh0+8='
+          },
+          {
+            urls: 'turn:global.turn.twilio.com:3478?transport=tcp',
+            username: 'f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d',
+            credential: 'w1WpauEiFbhP61/V5WzHo/6qtXgDO4jllb5MByAh0+8='
+          },
+          {
+            urls: 'turn:global.turn.twilio.com:443?transport=tcp',
+            username: 'f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334fcc1be9c27212d',
+            credential: 'w1WpauEiFbhP61/V5WzHo/6qtXgDO4jllb5MByAh0+8='
+          }
         ]
       }
     });
 
     // Add the stream to the peer if available
     if (stream) {
-      stream.getTracks().forEach(track => {
-        peer.addTrack(track, stream);
-      });
+      try {
+        stream.getTracks().forEach(track => {
+          peer.addTrack(track, stream);
+        });
+        console.log('Added local tracks to peer:', stream.getTracks().length);
+      } catch (err) {
+        console.error('Error adding tracks to peer:', err);
+      }
+    } else {
+      console.log('No local stream to add to peer');
     }
 
     // Signal the peer with the incoming signal
@@ -421,17 +543,24 @@ const Meeting: React.FC = () => {
     });
 
     peer.on('stream', (remoteStream) => {
-      console.log('Received stream from peer:', callerID);
+      console.log('Received stream from peer:', callerID, 'Tracks:', remoteStream.getTracks().length);
       
       // Update peers state with the stream
       setPeers(prevPeers => {
         return prevPeers.map(p => {
           if (p.peerId === callerID) {
+            console.log('Updating peer with stream:', callerID);
             return { ...p, stream: remoteStream };
           }
           return p;
         });
       });
+      
+      // Also update the ref
+      const peerRef = peersRef.current.find(p => p.peerId === callerID);
+      if (peerRef) {
+        peerRef.stream = remoteStream;
+      }
     });
 
     return peer;
@@ -439,19 +568,16 @@ const Meeting: React.FC = () => {
 
   // Set video reference for a peer
   const setPeerVideoRef = (peerId: string, element: HTMLVideoElement | null) => {
-    if (element) {
-      peerVideos.current[peerId] = element;
-      
-      // Find the peer
+    if (element && !element.srcObject) {
       const peer = peers.find(p => p.peerId === peerId);
-      
-      // If we have a stream for this peer, set it to the video element
       if (peer && peer.stream) {
         console.log('Setting stream to video element for peer:', peerId);
         element.srcObject = peer.stream;
         element.play().catch(err => {
           console.error(`Error playing video for ${peerId}:`, err);
         });
+      } else {
+        console.log('No stream available yet for peer:', peerId);
       }
     }
   };
