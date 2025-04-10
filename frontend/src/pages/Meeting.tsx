@@ -607,7 +607,7 @@ const Meeting: React.FC = () => {
       peerVideos.current[peerId] = element;
       
       // Find the peer and its stream
-      const peer = peers.find(p => p.peerId === peerId);
+      const peer = peersRef.current.find(p => p.peerId === peerId);
       
       // If we have a stream for this peer, set it to the video element
       if (peer && peer.stream) {
@@ -615,23 +615,14 @@ const Meeting: React.FC = () => {
         console.log('Video tracks:', peer.stream.getVideoTracks().length);
         console.log('Audio tracks:', peer.stream.getAudioTracks().length);
         
-        // Only set if not already set to avoid unnecessary reattachment
-        if (element.srcObject !== peer.stream) {
-          element.srcObject = peer.stream;
-          
-          // Add event listeners to handle playback issues
-          element.onloadedmetadata = () => {
-            console.log('Video metadata loaded for peer:', peerId);
-            element.play().catch(err => {
-              console.error(`Error playing video for ${peerId}:`, err);
-            });
-          };
-          
-          // Try to play the video
+        element.srcObject = peer.stream;
+        
+        element.onloadedmetadata = () => {
+          console.log('Video metadata loaded for peer:', peerId);
           element.play().catch(err => {
             console.error(`Error playing video for ${peerId}:`, err);
           });
-        }
+        };
       } else {
         console.log('No stream available yet for peer:', peerId);
       }
@@ -656,6 +647,8 @@ const Meeting: React.FC = () => {
           borderRadius: '8px',
           overflow: 'hidden',
           backgroundColor: '#1a1a1a',
+          width: '100%',
+          height: '100%',
         }}
       >
         {/* Video element */}
@@ -664,12 +657,11 @@ const Meeting: React.FC = () => {
           ref={(element) => setPeerVideoRef(peer.peerId, element)}
           autoPlay
           playsInline
-          muted={false}
           style={{
             width: '100%',
             height: '100%',
             objectFit: 'cover',
-            display: 'block',
+            display: peer.stream && peer.stream.getVideoTracks().length > 0 ? 'block' : 'none',
           }}
         />
         
