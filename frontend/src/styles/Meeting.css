@@ -1,0 +1,341 @@
+/* Meeting.css - Styling for the Zoom-like video meeting interface */
+
+/* Main container */
+.meeting-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background-color: #1a1a1a;
+  color: white;
+  position: relative;
+}
+
+/* Video grid */
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-auto-rows: 225px;
+  gap: 10px;
+  padding: 10px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.video-grid.chat-open {
+  width: calc(100% - 300px);
+}
+
+/* Local video container */
+.local-video-container,
+.participant-video-container {
+  position: relative;
+  background-color: #2d2d2d;
+  border-radius: 8px;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+.local-video-container video,
+.participant-video-container video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.video-off {
+  display: none;
+}
+
+.no-video-placeholder {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  background-color: #3d3d3d;
+}
+
+.avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background-color: #6264a7;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 32px;
+  font-weight: bold;
+}
+
+/* Participant info */
+.participant-info {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  background-color: rgba(0, 0, 0, 0.6);
+  padding: 5px 10px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  z-index: 10;
+}
+
+.participant-name {
+  margin-right: 8px;
+}
+
+.audio-indicator {
+  color: #ff4d4f;
+}
+
+/* Controls */
+.meeting-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 15px;
+  background-color: #2d2d2d;
+  gap: 10px;
+}
+
+.control-button {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  border: none;
+  background-color: #424242;
+  color: white;
+  font-size: 20px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.control-button:hover {
+  background-color: #555555;
+}
+
+.control-button.active {
+  background-color: #f44336;
+}
+
+.control-button.leave-button {
+  background-color: #f44336;
+}
+
+.control-button.leave-button:hover {
+  background-color: #d32f2f;
+}
+
+/* Chat panel */
+.chat-panel {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 300px;
+  height: calc(100% - 80px);
+  background-color: #2d2d2d;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #3d3d3d;
+}
+
+.chat-header {
+  padding: 15px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #3d3d3d;
+}
+
+.chat-header h3 {
+  margin: 0;
+}
+
+.close-chat {
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.message {
+  max-width: 80%;
+  padding: 10px;
+  border-radius: 8px;
+  background-color: #424242;
+  align-self: flex-start;
+}
+
+.my-message {
+  background-color: #0b93f6;
+  align-self: flex-end;
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+
+.message-sender {
+  font-weight: bold;
+}
+
+.message-time {
+  opacity: 0.7;
+}
+
+.message-content {
+  word-break: break-word;
+}
+
+.chat-input {
+  padding: 15px;
+  display: flex;
+  gap: 10px;
+  border-top: 1px solid #3d3d3d;
+}
+
+.chat-input input {
+  flex: 1;
+  padding: 10px;
+  border-radius: 4px;
+  border: none;
+  background-color: #424242;
+  color: white;
+}
+
+.chat-input button {
+  padding: 10px 15px;
+  border: none;
+  border-radius: 4px;
+  background-color: #0b93f6;
+  color: white;
+  cursor: pointer;
+}
+
+.chat-input button:hover {
+  background-color: #0a84e0;
+}
+
+/* Waiting room */
+.waiting-room {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  background-color: #1a1a1a;
+  color: white;
+}
+
+.waiting-room h2 {
+  margin-bottom: 20px;
+}
+
+/* Waiting room panel for host */
+.waiting-room-panel {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  background-color: #2d2d2d;
+  border-radius: 8px;
+  padding: 15px;
+  width: 250px;
+  z-index: 100;
+}
+
+.waiting-room-panel h3 {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.waiting-room-panel ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.waiting-room-panel li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #3d3d3d;
+}
+
+.waiting-room-panel li:last-child {
+  border-bottom: none;
+}
+
+.waiting-room-panel button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 4px;
+  background-color: #0b93f6;
+  color: white;
+  cursor: pointer;
+}
+
+.waiting-room-panel button:hover {
+  background-color: #0a84e0;
+}
+
+/* Name input form */
+.name-input-container {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  background-color: #1a1a1a;
+  color: white;
+}
+
+.name-input-container h2 {
+  margin-bottom: 20px;
+}
+
+.name-input-container form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  width: 300px;
+}
+
+.name-input-container input {
+  padding: 12px;
+  border-radius: 4px;
+  border: none;
+  background-color: #2d2d2d;
+  color: white;
+}
+
+.name-input-container button {
+  padding: 12px;
+  border: none;
+  border-radius: 4px;
+  background-color: #0b93f6;
+  color: white;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.name-input-container button:hover {
+  background-color: #0a84e0;
+}

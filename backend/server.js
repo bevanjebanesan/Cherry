@@ -3,6 +3,7 @@ const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const mongoose = require("mongoose");
+const { initializeMediaServer, handleSocketConnection } = require("./mediaServer");
 require("dotenv").config();
 
 const app = express();
@@ -20,6 +21,8 @@ app.use(cors({
 app.use(express.json());
 
 const server = http.createServer(app);
+
+// Initialize Socket.IO with improved WebSocket configuration
 const io = new Server(server, {
   cors: {
     origin: process.env.FRONTEND_URL 
@@ -44,6 +47,16 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 5000;
 
+// Initialize the media server
+initializeMediaServer()
+  .then(() => {
+    console.log('Media server initialized successfully');
+  })
+  .catch(error => {
+    console.error('Failed to initialize media server:', error);
+    process.exit(1);
+  });
+
 // In-memory store
 let meetings = {}; // meetingId -> { users: [socketId1, socketId2, ...] }
 let userNames = {}; // socketId -> userName
@@ -51,6 +64,9 @@ let userNames = {}; // socketId -> userName
 // Socket.IO events
 io.on("connection", (socket) => {
   console.log(`User connected: ${socket.id}`);
+
+  // Handle media server socket events
+  handleSocketConnection(socket, io);
 
   // Handle connection errors
   socket.on("error", (error) => {
@@ -106,30 +122,6 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error("Error in join-room event:", error);
       socket.emit("error", { message: "Failed to join room. Please try again." });
-    }
-  });
-
-  socket.on("sending-signal", ({ userToSignal, callerID, signal, callerName }) => {
-    try {
-      console.log(`Sending signal from ${callerName} (${callerID}) to ${userToSignal}`);
-      io.to(userToSignal).emit("user-joined", { signal, id: callerID, name: callerName });
-    } catch (error) {
-      console.error("Error in sending-signal event:", error);
-      socket.emit("error", { message: "Failed to send signal. Please try again." });
-    }
-  });
-
-  socket.on("returning-signal", ({ signal, callerID }) => {
-    try {
-      console.log(`Returning signal from ${socket.id} to ${callerID}`);
-      io.to(callerID).emit("receiving-returned-signal", {
-        signal,
-        id: socket.id,
-        name: socket.userName
-      });
-    } catch (error) {
-      console.error("Error in returning-signal event:", error);
-      socket.emit("error", { message: "Failed to return signal. Please try again." });
     }
   });
 
@@ -209,18 +201,21 @@ app.post('/api/meetings/create', (req, res) => {
   res.json({ meetingId });
 });
 
-// MongoDB connection
+// Health check endpoint
+app.get("/", (req, res) => {
+  res.send("Cherry Video Meeting Server is running");
+});
+
+// Start the server
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// Connect to MongoDB if configured
 if (process.env.MONGO_URI || process.env.MONGODB_URI) {
   const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
   mongoose
     .connect(mongoUri)
     .then(() => console.log("MongoDB connected"))
-    .catch((err) => {
-      console.error("MongoDB connection error:", err);
-      console.log("Starting server without MongoDB...");
-    });
-} else {
-  console.log("No MongoDB URI provided. Starting server without MongoDB...");
+    .catch((err) => console.error("MongoDB connection error:", err));
 }
-
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
