@@ -23,25 +23,25 @@ interface Message {
 const Meeting = () => {
   const { meetingId } = useParams();
   const navigate = useNavigate();
-  const [socket, setSocket] = useState(null);
-  const [stream, setStream] = useState(null);
-  const [peers, setPeers] = useState([]);
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [peers, setPeers] = useState<PeerConnection[]>([]);
   const [name, setName] = useState('');
   const [nameSubmitted, setNameSubmitted] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [originalStream, setOriginalStream] = useState(null);
+  const [originalStream, setOriginalStream] = useState<MediaStream | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [messageInput, setMessageInput] = useState('');
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [participantCount, setParticipantCount] = useState(1); // Default to 1 (self)
   
-  const peersRef = useRef([]);
-  const socketRef = useRef(null);
-  const userVideo = useRef(null);
-  const screenTrackRef = useRef(null);
-  const messagesEndRef = useRef(null);
+  const peersRef = useRef<PeerConnection[]>([]);
+  const socketRef = useRef<Socket | null>(null);
+  const userVideo = useRef<HTMLVideoElement | null>(null);
+  const screenTrackRef = useRef<MediaStreamTrack | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   // Set up socket connection and getUserMedia
   useEffect(() => {
@@ -56,7 +56,35 @@ const Meeting = () => {
         : 'https://cherry-backend.onrender.com');
     
     console.log(`Connecting to socket server at: ${socketUrl}`);
-    const newSocket = io(socketUrl);
+    
+    // Improved Socket.IO connection with reconnection options
+    const newSocket = io(socketUrl, {
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
+      transports: ['websocket', 'polling'], // Try websocket first, fallback to polling
+      forceNew: true
+    });
+    
+    // Handle connection events
+    newSocket.on('connect', () => {
+      console.log('Socket connected successfully');
+    });
+    
+    newSocket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
+    });
+    
+    newSocket.on('reconnect_attempt', (attemptNumber) => {
+      console.log(`Socket reconnection attempt #${attemptNumber}`);
+    });
+    
+    newSocket.on('reconnect_failed', () => {
+      console.error('Socket reconnection failed after multiple attempts');
+      alert('Connection to the server failed. Please refresh the page and try again.');
+    });
+    
     socketRef.current = newSocket;
     setSocket(newSocket);
 
@@ -92,30 +120,32 @@ const Meeting = () => {
         socketRef.current.emit('join-room', meetingId, userId, name);
         
         // Handle existing users in the room
-        socketRef.current.on('all-users', users => {
+        socketRef.current.on('all-users', (users: Array<{id: string, name: string}>) => {
           console.log('Received all users:', users);
           
           // Create a peer connection for each existing user
-          const peers = [];
+          const peers: PeerConnection[] = [];
           users.forEach(user => {
-            const peer = createPeer(user.id, socketRef.current.id, currentStream, name);
-            peersRef.current.push({
-              peerID: user.id,
-              peer,
-              name: user.name
-            });
-            peers.push({
-              peerID: user.id,
-              peer,
-              name: user.name
-            });
+            if (socketRef.current) {
+              const peer = createPeer(user.id, socketRef.current.id, currentStream, name);
+              peersRef.current.push({
+                peerID: user.id,
+                peer,
+                name: user.name
+              });
+              peers.push({
+                peerID: user.id,
+                peer,
+                name: user.name
+              });
+            }
           });
           
           setPeers(peers);
         });
         
         // Handle new users joining
-        socketRef.current.on('user-joined', payload => {
+        socketRef.current.on('user-joined', (payload: {id: string, name: string, signal?: any}) => {
           console.log('User joined:', payload);
           
           // If this user is sending us a signal, create a peer to receive it
@@ -140,7 +170,7 @@ const Meeting = () => {
         });
         
         // Handle receiving returned signal
-        socketRef.current.on('receiving-returned-signal', payload => {
+        socketRef.current.on('receiving-returned-signal', (payload: {id: string, signal: any, name?: string}) => {
           console.log('Received returned signal:', payload);
           const item = peersRef.current.find(p => p.peerID === payload.id);
           if (item) {
@@ -160,7 +190,7 @@ const Meeting = () => {
         });
         
         // Handle user disconnect
-        socketRef.current.on('user-left', id => {
+        socketRef.current.on('user-left', (id: string) => {
           console.log('User left:', id);
           const peerObj = peersRef.current.find(p => p.peerID === id);
           if (peerObj) {
@@ -173,17 +203,22 @@ const Meeting = () => {
         });
         
         // Handle receiving messages
-        socketRef.current.on('receive-message', data => {
+        socketRef.current.on('receive-message', (data: Message) => {
           console.log('Received message:', data);
           setMessages(prevMessages => [...prevMessages, data]);
         });
         
         // Handle participant count updates
-        socketRef.current.on('participant-count', count => {
+        socketRef.current.on('participant-count', (count: number) => {
           console.log('Participant count:', count);
           setParticipantCount(count);
         });
         
+        // Handle errors
+        socketRef.current.on('error', (error: {message: string}) => {
+          console.error('Socket error:', error);
+          alert(`Connection error: ${error.message}`);
+        });
       })
       .catch(error => {
         console.error('Error accessing media devices:', error);
@@ -198,44 +233,97 @@ const Meeting = () => {
         socketRef.current.off('user-left');
         socketRef.current.off('receive-message');
         socketRef.current.off('participant-count');
+        socketRef.current.off('error');
       }
     };
   }, [nameSubmitted, meetingId, name]);
 
   // Function to create a peer (initiator)
-  function createPeer(userToSignal, callerID, stream, callerName) {
+  function createPeer(userToSignal: string, callerID: string, stream: MediaStream, callerName: string): Peer.Instance {
     console.log(`Creating peer to signal ${userToSignal}`);
     
     const peer = new Peer({
       initiator: true,
       trickle: false,
       stream,
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478' },
+          {
+            urls: 'turn:numb.viagenie.ca',
+            credential: 'muazkh',
+            username: 'webrtc@live.com'
+          }
+        ]
+      },
+      sdpTransform: (sdp) => {
+        // Safari specific handling for SDP
+        const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        if (isSafari) {
+          console.log('Safari detected, transforming SDP');
+          return sdp.replace('useinbandfec=1', 'useinbandfec=1; stereo=1; maxaveragebitrate=510000');
+        }
+        return sdp;
+      }
     });
     
     peer.on('signal', signal => {
-      socketRef.current.emit('sending-signal', { 
-        userToSignal, 
-        callerID, 
-        signal,
-        callerName
-      });
+      if (socketRef.current) {
+        socketRef.current.emit('sending-signal', { 
+          userToSignal, 
+          callerID, 
+          signal,
+          callerName
+        });
+      }
+    });
+
+    peer.on('error', (err) => {
+      console.error('Peer connection error:', err);
     });
     
     return peer;
   }
   
   // Function to add a peer (receiver)
-  function addPeer(incomingSignal, callerID, stream, callerName) {
+  function addPeer(incomingSignal: any, callerID: string, stream: MediaStream, callerName: string): Peer.Instance {
     console.log(`Adding peer from ${callerName} (${callerID})`);
     
     const peer = new Peer({
       initiator: false,
       trickle: false,
       stream,
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478' },
+          {
+            urls: 'turn:numb.viagenie.ca',
+            credential: 'muazkh',
+            username: 'webrtc@live.com'
+          }
+        ]
+      },
+      sdpTransform: (sdp) => {
+        // Safari specific handling for SDP
+        const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        if (isSafari) {
+          console.log('Safari detected, transforming SDP');
+          return sdp.replace('useinbandfec=1', 'useinbandfec=1; stereo=1; maxaveragebitrate=510000');
+        }
+        return sdp;
+      }
     });
     
     peer.on('signal', signal => {
-      socketRef.current.emit('returning-signal', { signal, callerID });
+      if (socketRef.current) {
+        socketRef.current.emit('returning-signal', { signal, callerID });
+      }
+    });
+
+    peer.on('error', (err) => {
+      console.error('Peer connection error:', err);
     });
     
     peer.signal(incomingSignal);
@@ -244,7 +332,7 @@ const Meeting = () => {
   }
 
   // Function to set video ref for a peer
-  const setPeerVideoRef = (video, peer) => {
+  const setPeerVideoRef = (video: HTMLVideoElement | null, peer: PeerConnection) => {
     if (!video) return;
     
     if (peer && peer.peer) {
@@ -254,7 +342,7 @@ const Meeting = () => {
       peer.peer.removeAllListeners('stream');
       
       // Add stream listener
-      peer.peer.on('stream', stream => {
+      peer.peer.on('stream', (stream: MediaStream) => {
         console.log(`Received stream from peer ${peer.name} (${peer.peerID})`);
         
         // Ensure video element exists and set its srcObject
@@ -470,7 +558,7 @@ const Meeting = () => {
               onChange={(e) => setMessageInput(e.target.value)}
               onKeyPress={(e) => {
                 if (e.key === 'Enter') {
-                  socketRef.current.emit('send-message', messageInput);
+                  socketRef.current?.emit('send-message', messageInput);
                   setMessageInput('');
                 }
               }}
@@ -479,7 +567,7 @@ const Meeting = () => {
               variant="contained" 
               color="primary" 
               onClick={() => {
-                socketRef.current.emit('send-message', messageInput);
+                socketRef.current?.emit('send-message', messageInput);
                 setMessageInput('');
               }}
               disabled={!messageInput.trim()}

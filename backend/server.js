@@ -31,7 +31,15 @@ const io = new Server(server, {
       ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true
-  }
+  },
+  // Improved WebSocket configuration
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  connectTimeout: 30000,
+  allowUpgrades: true,
+  upgradeTimeout: 10000,
+  maxHttpBufferSize: 1e8 // 100MB
 });
 
 const PORT = process.env.PORT || 5000;
@@ -40,64 +48,127 @@ const PORT = process.env.PORT || 5000;
 let meetings = {}; // meetingId -> { users: [socketId1, socketId2, ...] }
 let userNames = {}; // socketId -> userName
 
+// Socket.IO events
 io.on("connection", (socket) => {
-  console.log(`New connection: ${socket.id}`);
+  console.log(`User connected: ${socket.id}`);
 
-  socket.on("join-meeting", ({ meetingId, userName }) => {
-    console.log(`User ${userName} joining meeting ${meetingId}`);
-    socket.join(meetingId);
-    socket.userName = userName;
-    socket.meetingId = meetingId;
-    userNames[socket.id] = userName;
-
-    // Add user to meeting
-    if (!meetings[meetingId]) meetings[meetingId] = [];
-    meetings[meetingId].push(socket.id);
-
-    // Send list of existing users in the meeting to the new user
-    const otherUsers = meetings[meetingId].filter(id => id !== socket.id);
-    console.log(`Sending ${otherUsers.length} existing users to new user ${socket.id}`);
-    socket.emit("all-users", otherUsers);
-
-    // Notify others
-    otherUsers.forEach(userId => {
-      console.log(`Notifying user ${userId} about new user ${socket.id}`);
-      io.to(userId).emit("user-joined", { signal: null, callerID: socket.id });
-    });
+  // Handle connection errors
+  socket.on("error", (error) => {
+    console.error(`Socket error for ${socket.id}:`, error);
   });
 
-  socket.on("sending-signal", ({ userToSignal, callerID, signal }) => {
-    console.log(`User ${callerID} sending signal to ${userToSignal}`);
-    io.to(userToSignal).emit("user-joined", { signal, callerID });
-  });
-
-  socket.on("returning-signal", ({ callerID, signal }) => {
-    console.log(`User ${socket.id} returning signal to ${callerID}`);
-    io.to(callerID).emit("receiving-returned-signal", { signal, id: socket.id });
-  });
-
-  // Handle chat messages
-  socket.on("send-message", ({ roomID, message, sender, time }) => {
-    console.log(`User ${sender} sending message to room ${roomID}: ${message}`);
-    // Broadcast the message to all users in the room except the sender
-    socket.to(roomID).emit("receive-message", { sender, message, time });
-  });
-
-  socket.on("disconnect", () => {
-    console.log(`Disconnected: ${socket.id}`);
-    const userName = userNames[socket.id];
-    delete userNames[socket.id];
-    
-    for (const meetingId in meetings) {
-      if (meetings[meetingId].includes(socket.id)) {
-        console.log(`User ${userName || socket.id} left meeting ${meetingId}`);
-        meetings[meetingId] = meetings[meetingId].filter(id => id !== socket.id);
-        io.in(meetingId).emit("user-disconnected", socket.id);
-        if (meetings[meetingId].length === 0) {
-          console.log(`Meeting ${meetingId} is now empty, removing it`);
-          delete meetings[meetingId];
-        }
+  socket.on("join-room", async (meetingId, userId, userName) => {
+    try {
+      console.log(`User ${userName} (${userId}) joined room ${meetingId}`);
+      
+      // Join the room
+      socket.join(meetingId);
+      
+      // Store user info
+      socket.userId = userId;
+      socket.userName = userName;
+      socket.meetingId = meetingId;
+      
+      // Update meetings store
+      if (!meetings[meetingId]) {
+        meetings[meetingId] = { users: [] };
       }
+      meetings[meetingId].users.push(socket.id);
+      userNames[socket.id] = userName;
+      
+      // Get all users in the room
+      const roomUsers = [];
+      const socketsInRoom = await io.in(meetingId).fetchSockets();
+      
+      socketsInRoom.forEach((s) => {
+        if (s.id !== socket.id) {
+          roomUsers.push({
+            id: s.userId,
+            name: s.userName
+          });
+        }
+      });
+      
+      // Send the list of existing users to the new user
+      socket.emit("all-users", roomUsers);
+      
+      // Notify everyone else that a new user joined
+      socket.to(meetingId).emit("user-joined", { id: userId, name: userName });
+      
+      // Update participant count
+      io.to(meetingId).emit("participant-count", socketsInRoom.length);
+      
+      console.log(`Sent existing ${roomUsers.length} users to ${userName}`);
+    } catch (error) {
+      console.error("Error in join-room event:", error);
+      socket.emit("error", { message: "Failed to join room. Please try again." });
+    }
+  });
+
+  socket.on("sending-signal", ({ userToSignal, signal, callerID, callerName }) => {
+    try {
+      console.log(`Sending signal from ${callerName} (${callerID}) to ${userToSignal}`);
+      io.to(userToSignal).emit("user-joined", { signal, id: callerID, name: callerName });
+    } catch (error) {
+      console.error("Error in sending-signal event:", error);
+      socket.emit("error", { message: "Failed to send signal. Please try again." });
+    }
+  });
+
+  socket.on("returning-signal", ({ signal, callerID }) => {
+    try {
+      console.log(`Returning signal to ${callerID}`);
+      io.to(callerID).emit("receiving-returned-signal", {
+        signal,
+        id: socket.userId,
+        name: socket.userName
+      });
+    } catch (error) {
+      console.error("Error in returning-signal event:", error);
+      socket.emit("error", { message: "Failed to return signal. Please try again." });
+    }
+  });
+
+  socket.on("send-message", (data) => {
+    try {
+      console.log(`Message from ${data.sender} in room ${data.roomID}: ${data.message}`);
+      socket.to(data.roomID).emit("receive-message", {
+        message: data.message,
+        sender: data.sender,
+        time: data.time,
+        fromMe: false
+      });
+    } catch (error) {
+      console.error("Error in send-message event:", error);
+      socket.emit("error", { message: "Failed to send message. Please try again." });
+    }
+  });
+
+  socket.on("disconnect", async () => {
+    try {
+      const meetingId = socket.meetingId;
+      const userId = socket.userId;
+      const userName = socket.userName;
+      
+      if (meetingId) {
+        console.log(`User ${userName} (${userId}) left room ${meetingId}`);
+        
+        // Notify everyone that a user left
+        socket.to(meetingId).emit("user-left", userId);
+        
+        // Update participant count
+        const socketsInRoom = await io.in(meetingId).fetchSockets();
+        io.to(meetingId).emit("participant-count", socketsInRoom.length);
+        
+        // Remove user from meetings store
+        meetings[meetingId].users = meetings[meetingId].users.filter((id) => id !== socket.id);
+        delete userNames[socket.id];
+      } else {
+        console.log(`User disconnected: ${socket.id}`);
+      }
+    } catch (error) {
+      console.error("Error in disconnect event:", error);
+      socket.emit("error", { message: "Failed to disconnect. Please try again." });
     }
   });
 });
