@@ -93,80 +93,79 @@ const Meeting: React.FC<MeetingProps> = () => {
     };
   }, []);
 
-  // Handle socket events
+  // Socket event listeners
   useEffect(() => {
     if (!socketRef.current || !isNameSubmitted) return;
-
-    // Handle receiving messages
-    socketRef.current.on("receive-message", (messageData: Message) => {
-      setMessages(prevMessages => [...prevMessages, messageData]);
+    
+    // Handle new participant joining
+    socketRef.current.on("participantJoined", (data: { id: string; name: string }) => {
+      console.log(`Participant joined: ${data.name} (${data.id})`);
+      
+      // Add the new participant to the list
+      setParticipants(prevParticipants => [
+        ...prevParticipants,
+        {
+          id: data.id,
+          name: data.name,
+          audioEnabled: true,
+          videoEnabled: true,
+        }
+      ]);
+    });
+    
+    // Handle participant leaving
+    socketRef.current.on("participantLeft", (data: { id: string }) => {
+      console.log(`Participant left: ${data.id}`);
+      
+      // Remove the participant from the list
+      setParticipants(prevParticipants => 
+        prevParticipants.filter(p => p.id !== data.id)
+      );
+    });
+    
+    // Handle new producer
+    socketRef.current.on("newProducer", (data: { producerId: string; producerSocketId: string; kind: string }) => {
+      console.log(`New producer: ${data.producerId} (${data.kind}) from ${data.producerSocketId}`);
+      
+      // Consume the new producer
+      consumeStream(data.producerId);
+    });
+    
+    // Handle chat messages
+    socketRef.current.on("receive-message", (data: Message) => {
+      console.log(`Received message from ${data.sender}: ${data.message}`);
+      
+      // Add the message to the list
+      setMessages(prevMessages => [...prevMessages, {
+        ...data,
+        fromMe: false
+      }]);
+      
+      // Scroll to bottom
       if (chatContainerRef.current) {
         setTimeout(() => {
           chatContainerRef.current!.scrollTop = chatContainerRef.current!.scrollHeight;
         }, 0);
       }
     });
-
-    // Handle participant joined
-    socketRef.current.on("participantJoined", ({ id, name }) => {
-      console.log(`Participant joined: ${name} (${id})`);
-      setParticipants(prevParticipants => [
-        ...prevParticipants,
-        { id, name, audioEnabled: true, videoEnabled: true }
-      ]);
-    });
-
-    // Handle participant left
-    socketRef.current.on("participantLeft", ({ id }) => {
-      console.log(`Participant left: ${id}`);
-      setParticipants(prevParticipants => 
-        prevParticipants.filter(participant => participant.id !== id)
-      );
-    });
-
-    // Handle waiting room updates (for host)
-    socketRef.current.on("waitingRoomUpdated", ({ participants }) => {
-      console.log("Waiting room updated:", participants);
+    
+    // Handle waiting room updates
+    socketRef.current.on("waitingRoomUpdated", (participants: WaitingRoomParticipant[]) => {
+      console.log(`Waiting room updated: ${participants.length} participants`);
       setWaitingRoomParticipants(participants);
     });
-
-    // Handle being admitted to room from waiting room
-    socketRef.current.on("admittedToRoom", async ({ routerRtpCapabilities }) => {
-      console.log("Admitted to room from waiting room");
-      setInWaitingRoom(false);
-      
-      // Load the device with router RTP capabilities
-      await loadDevice(routerRtpCapabilities);
-    });
-
-    // Handle being promoted to host
-    socketRef.current.on("promotedToHost", () => {
-      console.log("You have been promoted to host");
-      setIsHost(true);
-    });
-
-    // Handle new producer
-    socketRef.current.on("newProducer", async ({ producerId, producerSocketId, kind }) => {
-      console.log(`New ${kind} producer: ${producerId} from ${producerSocketId}`);
-      
-      // Only consume if we have a device and receive transport
-      if (device && recvTransport) {
-        await consumeStream(producerId);
-      }
-    });
-
+    
+    // Clean up on component unmount
     return () => {
       if (socketRef.current) {
-        socketRef.current.off("receive-message");
         socketRef.current.off("participantJoined");
         socketRef.current.off("participantLeft");
-        socketRef.current.off("waitingRoomUpdated");
-        socketRef.current.off("admittedToRoom");
-        socketRef.current.off("promotedToHost");
         socketRef.current.off("newProducer");
+        socketRef.current.off("receive-message");
+        socketRef.current.off("waitingRoomUpdated");
       }
     };
-  }, [isNameSubmitted, device, recvTransport]);
+  }, [socketRef.current, isNameSubmitted]);
 
   // Handle chat container scrolling
   useEffect(() => {
@@ -303,7 +302,7 @@ const Meeting: React.FC<MeetingProps> = () => {
         roomId: meetingId,
         consuming: false,
       }, async (response: { success: boolean; params?: any; error?: string }) => {
-        if (response.success) {
+        if (response.success && response.params) {
           try {
             // Create the transport
             const transport = device!.createSendTransport({
@@ -338,7 +337,7 @@ const Meeting: React.FC<MeetingProps> = () => {
                   rtpParameters,
                   appData,
                 }, (response: { success: boolean; producerId?: string; error?: string }) => {
-                  if (response.success) {
+                  if (response.success && response.producerId !== undefined) {
                     callback({ id: response.producerId });
                   } else {
                     errback(new Error(response.error || "Unknown error"));
@@ -374,7 +373,7 @@ const Meeting: React.FC<MeetingProps> = () => {
         roomId: meetingId,
         consuming: true,
       }, async (response: { success: boolean; params?: any; error?: string }) => {
-        if (response.success) {
+        if (response.success && response.params) {
           try {
             // Create the transport
             const transport = device!.createRecvTransport({
@@ -462,45 +461,78 @@ const Meeting: React.FC<MeetingProps> = () => {
 
   // Consume a remote stream
   const consumeStream = async (producerId: string) => {
-    if (!socketRef.current || !meetingId || !device || !recvTransport) return;
+    if (!socketRef.current || !meetingId || !device || !recvTransport) {
+      console.error("Cannot consume stream: missing required objects");
+      return;
+    }
+    
+    console.log(`Consuming stream for producer: ${producerId}`);
     
     socketRef.current.emit("consume", {
       roomId: meetingId,
       producerId,
       rtpCapabilities: device.rtpCapabilities,
-    }, async (response: any) => {
-      if (response.success) {
-        // Create a consumer for the producer
-        const consumer = await recvTransport.consume({
-          id: response.params.id,
-          producerId: response.params.producerId,
-          kind: response.params.kind,
-          rtpParameters: response.params.rtpParameters,
-        });
-        
-        // Store the consumer
-        setConsumers(prev => new Map(prev).set(consumer.id, consumer));
-        
-        // Create a new MediaStream with the consumer's track
-        const stream = new MediaStream([consumer.track]);
-        
-        // Update the participant's stream
-        setParticipants(prevParticipants => {
-          return prevParticipants.map(participant => {
-            if (participant.id === response.params.producerSocketId) {
-              return {
-                ...participant,
-                videoStream: stream,
-              };
-            }
-            return participant;
+    }, async (response: { 
+      success: boolean; 
+      params?: { 
+        id: string; 
+        producerId: string; 
+        kind: "audio" | "video"; 
+        rtpParameters: any; 
+        producerSocketId: string;
+      }; 
+      error?: string 
+    }) => {
+      if (response.success && response.params) {
+        try {
+          // Create a consumer for the producer
+          const consumer = await recvTransport.consume({
+            id: response.params.id,
+            producerId: response.params.producerId,
+            kind: response.params.kind,
+            rtpParameters: response.params.rtpParameters,
           });
-        });
-        
-        // Resume the consumer
-        await consumer.resume();
+          
+          // Store the consumer
+          setConsumers(prev => new Map(prev).set(consumer.id, consumer));
+          
+          // Create a new MediaStream with the consumer's track
+          const stream = new MediaStream([consumer.track]);
+          
+          const producerSocketId = response.params.producerSocketId;
+          console.log(`Created stream for consumer: ${consumer.id}, producer: ${response.params.producerId}, socket: ${producerSocketId}`);
+          
+          // Update the participant's stream
+          setParticipants(prevParticipants => {
+            return prevParticipants.map(participant => {
+              if (participant.id === producerSocketId) {
+                console.log(`Updating stream for participant: ${participant.name} (${participant.id})`);
+                return {
+                  ...participant,
+                  videoStream: stream,
+                };
+              }
+              return participant;
+            });
+          });
+          
+          // Resume the consumer
+          await consumer.resume();
+          
+          // Notify the server that we're ready to receive
+          if (socketRef.current) {
+            socketRef.current.emit("resumeConsumer", {
+              roomId: meetingId,
+              consumerId: consumer.id,
+            });
+          }
+          
+          console.log(`Consumer resumed: ${consumer.id}`);
+        } catch (error) {
+          console.error("Error consuming stream:", error);
+        }
       } else {
-        console.error("Failed to consume stream:", response.error);
+        console.error("Failed to consume stream:", response.error || "Unknown error");
       }
     });
   };

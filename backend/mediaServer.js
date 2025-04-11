@@ -126,6 +126,8 @@ class Peer {
     this.transports = new Map(); // transportId => Transport
     this.producers = new Map(); // producerId => Producer
     this.consumers = new Map(); // consumerId => Consumer
+    this.sendTransport = null;
+    this.recvTransport = null;
   }
 
   addTransport(transport) {
@@ -494,114 +496,314 @@ function handleSocketConnection(socket, io) {
 
   socket.on('createWebRtcTransport', async ({ roomId, consuming }, callback) => {
     try {
-      const { transport, params } = await createWebRtcTransport(roomId, socket.id, consuming);
-      callback({ success: true, params });
+      console.log(`Creating WebRTC transport for room ${roomId}, consuming: ${consuming}`);
+      
+      // Check if room exists
+      if (!rooms.has(roomId)) {
+        return callback({
+          success: false,
+          error: 'Room does not exist'
+        });
+      }
+      
+      const room = rooms.get(roomId);
+      
+      // Create a WebRTC transport
+      const transport = await room.router.createWebRtcTransport({
+        listenIps: config.mediasoup.webRtcTransport.listenIps,
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true,
+        initialAvailableOutgoingBitrate: config.mediasoup.webRtcTransport.initialAvailableOutgoingBitrate,
+      });
+      
+      // Store the transport
+      const peer = room.getPeer(socket.id);
+      if (!peer) {
+        return callback({
+          success: false,
+          error: 'Peer not found'
+        });
+      }
+      
+      if (consuming) {
+        peer.recvTransport = transport;
+      } else {
+        peer.sendTransport = transport;
+      }
+      
+      // Return transport parameters
+      callback({
+        success: true,
+        params: {
+          id: transport.id,
+          iceParameters: transport.iceParameters,
+          iceCandidates: transport.iceCandidates,
+          dtlsParameters: transport.dtlsParameters,
+          sctpParameters: transport.sctpParameters,
+        }
+      });
     } catch (error) {
       console.error('Error creating WebRTC transport:', error);
-      callback({ success: false, error: error.message });
+      callback({
+        success: false,
+        error: error.message
+      });
     }
   });
-
+  
   socket.on('connectWebRtcTransport', async ({ roomId, transportId, dtlsParameters }, callback) => {
     try {
+      console.log(`Connecting WebRTC transport ${transportId} for room ${roomId}`);
+      
+      // Check if room exists
+      if (!rooms.has(roomId)) {
+        return callback({
+          success: false,
+          error: 'Room does not exist'
+        });
+      }
+      
       const room = rooms.get(roomId);
-      if (!room) {
-        return callback({ success: false, error: 'Room not found' });
-      }
-      
       const peer = room.getPeer(socket.id);
+      
       if (!peer) {
-        return callback({ success: false, error: 'Peer not found' });
+        return callback({
+          success: false,
+          error: 'Peer not found'
+        });
       }
       
-      const transport = peer.getTransport(transportId);
+      // Find the transport
+      let transport;
+      if (peer.sendTransport && peer.sendTransport.id === transportId) {
+        transport = peer.sendTransport;
+      } else if (peer.recvTransport && peer.recvTransport.id === transportId) {
+        transport = peer.recvTransport;
+      }
+      
       if (!transport) {
-        return callback({ success: false, error: 'Transport not found' });
+        return callback({
+          success: false,
+          error: 'Transport not found'
+        });
       }
       
+      // Connect the transport
       await transport.connect({ dtlsParameters });
-      callback({ success: true });
+      
+      callback({
+        success: true
+      });
     } catch (error) {
       console.error('Error connecting WebRTC transport:', error);
-      callback({ success: false, error: error.message });
+      callback({
+        success: false,
+        error: error.message
+      });
     }
   });
-
+  
   socket.on('produce', async ({ roomId, transportId, kind, rtpParameters }, callback) => {
     try {
+      console.log(`Producing ${kind} for room ${roomId} using transport ${transportId}`);
+      
+      // Check if room exists
+      if (!rooms.has(roomId)) {
+        return callback({
+          success: false,
+          error: 'Room does not exist'
+        });
+      }
+      
       const room = rooms.get(roomId);
-      if (!room) {
-        return callback({ success: false, error: 'Room not found' });
-      }
-      
       const peer = room.getPeer(socket.id);
+      
       if (!peer) {
-        return callback({ success: false, error: 'Peer not found' });
+        return callback({
+          success: false,
+          error: 'Peer not found'
+        });
       }
       
-      const producer = await peer.createProducer(transportId, kind, rtpParameters);
-      
-      // Inform all other participants about the new producer
-      for (const [otherPeerId, otherPeer] of room.peers.entries()) {
-        if (otherPeerId !== socket.id) {
-          otherPeer.socket.emit('newProducer', {
-            producerId: producer.id,
-            producerSocketId: socket.id,
-            kind,
-          });
-        }
+      // Find the transport
+      if (!peer.sendTransport || peer.sendTransport.id !== transportId) {
+        return callback({
+          success: false,
+          error: 'Send transport not found'
+        });
       }
       
-      callback({ success: true, producerId: producer.id });
+      // Create a producer
+      const producer = await peer.sendTransport.produce({
+        kind,
+        rtpParameters
+      });
+      
+      // Store the producer
+      peer.producers.set(producer.id, producer);
+      
+      // Notify other peers about the new producer
+      socket.to(roomId).emit('newProducer', {
+        producerId: producer.id,
+        producerSocketId: socket.id,
+        kind
+      });
+      
+      callback({
+        success: true,
+        producerId: producer.id
+      });
     } catch (error) {
-      console.error('Error producing:', error);
-      callback({ success: false, error: error.message });
+      console.error('Error producing media:', error);
+      callback({
+        success: false,
+        error: error.message
+      });
     }
   });
-
+  
   socket.on('consume', async ({ roomId, producerId, rtpCapabilities }, callback) => {
     try {
+      console.log(`Consuming producer ${producerId} for room ${roomId}`);
+      
+      // Check if room exists
+      if (!rooms.has(roomId)) {
+        return callback({
+          success: false,
+          error: 'Room does not exist'
+        });
+      }
+      
       const room = rooms.get(roomId);
-      if (!room) {
-        return callback({ success: false, error: 'Room not found' });
-      }
       
-      const peer = room.getPeer(socket.id);
-      if (!peer) {
-        return callback({ success: false, error: 'Peer not found' });
-      }
-      
-      // Find the producer peer
+      // Find the producer's peer
       let producerPeer;
-      for (const [peerId, p] of room.peers.entries()) {
-        for (const [id, producer] of p.producers.entries()) {
-          if (id === producerId) {
-            producerPeer = p;
+      let producer;
+      
+      for (const [peerId, peer] of room.peers) {
+        for (const [prodId, prod] of peer.producers) {
+          if (prodId === producerId) {
+            producerPeer = peer;
+            producer = prod;
             break;
           }
         }
         if (producerPeer) break;
       }
       
-      if (!producerPeer) {
-        return callback({ success: false, error: 'Producer not found' });
+      if (!producerPeer || !producer) {
+        return callback({
+          success: false,
+          error: 'Producer not found'
+        });
       }
       
-      const { consumer, params } = await peer.createConsumer(producerPeer, producerId, rtpCapabilities);
+      // Check if consumer can consume the producer
+      if (!room.router.canConsume({
+        producerId: producer.id,
+        rtpCapabilities
+      })) {
+        return callback({
+          success: false,
+          error: 'Cannot consume producer'
+        });
+      }
+      
+      // Find the consumer's peer
+      const consumerPeer = room.getPeer(socket.id);
+      
+      if (!consumerPeer) {
+        return callback({
+          success: false,
+          error: 'Consumer peer not found'
+        });
+      }
+      
+      // Check if receive transport exists
+      if (!consumerPeer.recvTransport) {
+        return callback({
+          success: false,
+          error: 'Receive transport not found'
+        });
+      }
+      
+      // Create a consumer
+      const consumer = await consumerPeer.recvTransport.consume({
+        producerId: producer.id,
+        rtpCapabilities,
+        paused: true // Start paused, will be resumed by the client
+      });
+      
+      // Store the consumer
+      consumerPeer.consumers.set(consumer.id, consumer);
+      
+      // Return consumer parameters
+      callback({
+        success: true,
+        params: {
+          id: consumer.id,
+          producerId: producer.id,
+          kind: consumer.kind,
+          rtpParameters: consumer.rtpParameters,
+          producerSocketId: producerPeer.id
+        }
+      });
+    } catch (error) {
+      console.error('Error consuming media:', error);
+      callback({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+  
+  socket.on('resumeConsumer', async ({ roomId, consumerId }, callback = () => {}) => {
+    try {
+      console.log(`Resuming consumer ${consumerId} for room ${roomId}`);
+      
+      // Check if room exists
+      if (!rooms.has(roomId)) {
+        return callback({
+          success: false,
+          error: 'Room does not exist'
+        });
+      }
+      
+      const room = rooms.get(roomId);
+      const peer = room.getPeer(socket.id);
+      
+      if (!peer) {
+        return callback({
+          success: false,
+          error: 'Peer not found'
+        });
+      }
+      
+      // Find the consumer
+      const consumer = peer.consumers.get(consumerId);
+      
+      if (!consumer) {
+        return callback({
+          success: false,
+          error: 'Consumer not found'
+        });
+      }
       
       // Resume the consumer
       await consumer.resume();
       
       callback({
-        success: true,
-        params: {
-          ...params,
-          producerName: producerPeer.name,
-        },
+        success: true
       });
     } catch (error) {
-      console.error('Error consuming:', error);
-      callback({ success: false, error: error.message });
+      console.error('Error resuming consumer:', error);
+      if (callback) {
+        callback({
+          success: false,
+          error: error.message
+        });
+      }
     }
   });
 
