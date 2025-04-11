@@ -61,7 +61,7 @@ const Meeting: React.FC<MeetingProps> = () => {
   // Connect to socket server
   useEffect(() => {
     // Connect to socket server
-    const socketUrl = process.env.REACT_APP_SOCKET_URL || "http://localhost:5000";
+    const socketUrl = window.location.hostname === 'localhost' ? 'http://localhost:5000' : 'https://cherry-backend.onrender.com';
     socketRef.current = io(socketUrl, {
       transports: ["websocket", "polling"], // Allow fallback to polling if websocket fails
       upgrade: true, // Allow transport upgrade
@@ -191,7 +191,7 @@ const Meeting: React.FC<MeetingProps> = () => {
       }
       
       // Join the room
-      joinRoom();
+      // joinRoom();
       
       return stream;
     } catch (error) {
@@ -215,6 +215,11 @@ const Meeting: React.FC<MeetingProps> = () => {
           console.log("You are in the waiting room");
           setInWaitingRoom(true);
         } else {
+          // Set host status if applicable
+          if (response.isHost) {
+            setIsHost(true);
+          }
+          
           // Load the device with router RTP capabilities
           await loadDevice(response.routerRtpCapabilities);
         }
@@ -250,99 +255,162 @@ const Meeting: React.FC<MeetingProps> = () => {
   // Load the mediasoup device
   const loadDevice = async (routerRtpCapabilities: any) => {
     try {
+      console.log("Loading mediasoup device");
+      
+      // Create a new device
       const newDevice = new mediasoupClient.Device();
       
       // Load the device with router RTP capabilities
       await newDevice.load({ routerRtpCapabilities });
+      
       setDevice(newDevice);
       
-      console.log("Mediasoup device loaded");
+      console.log("Device loaded successfully");
       
       // Create send and receive transports
-      await createSendTransport();
-      await createReceiveTransport();
+      const sendTransport = await createSendTransport();
+      console.log("Send transport created:", sendTransport?.id);
+      
+      const recvTransport = await createRecvTransport();
+      console.log("Receive transport created:", recvTransport?.id);
+      
+      // If we have a local stream, produce it
+      if (localStream && sendTransport) {
+        await produceStreams(sendTransport, localStream);
+      }
+      
+      // Get all producers in the room to consume
+      socketRef.current?.emit("getProducers", { roomId: meetingId }, (response: { success: boolean; producers?: any[]; error?: string }) => {
+        if (response.success && response.producers) {
+          response.producers.forEach(producer => {
+            consumeStream(producer.id);
+          });
+        }
+      });
     } catch (error) {
-      console.error("Failed to load mediasoup device:", error);
+      console.error("Error loading device:", error);
     }
   };
 
   // Create a WebRTC transport for sending media
   const createSendTransport = async () => {
-    if (!socketRef.current || !meetingId) return;
+    if (!socketRef.current || !meetingId || !device) return null;
     
-    socketRef.current.emit("createWebRtcTransport", { roomId: meetingId, consuming: false }, async (response: any) => {
-      if (response.success) {
-        const transport = device!.createSendTransport(response.params);
-        
-        // Set up transport event listeners
-        transport.on("connect", ({ dtlsParameters }, callback, errback) => {
-          socketRef.current!.emit("connectWebRtcTransport", {
-            roomId: meetingId,
-            transportId: transport.id,
-            dtlsParameters,
-          }, (response: any) => {
-            if (response.success) {
-              callback();
-            } else {
-              errback(new Error(response.error));
-            }
-          });
-        });
-        
-        transport.on("produce", async ({ kind, rtpParameters, appData }, callback, errback) => {
-          socketRef.current!.emit("produce", {
-            roomId: meetingId,
-            transportId: transport.id,
-            kind,
-            rtpParameters,
-          }, (response: any) => {
-            if (response.success) {
-              callback({ id: response.producerId });
-            } else {
-              errback(new Error(response.error));
-            }
-          });
-        });
-        
-        setSendTransport(transport);
-        
-        // Produce audio and video
-        if (localStream) {
-          await produceStreams(transport, localStream);
+    console.log("Creating send transport");
+    
+    return new Promise<mediasoupClient.types.Transport>((resolve, reject) => {
+      socketRef.current!.emit("createWebRtcTransport", {
+        roomId: meetingId,
+        consuming: false,
+      }, async (response: { success: boolean; params?: any; error?: string }) => {
+        if (response.success) {
+          try {
+            // Create the transport
+            const transport = device!.createSendTransport({
+              id: response.params.id,
+              iceParameters: response.params.iceParameters,
+              iceCandidates: response.params.iceCandidates,
+              dtlsParameters: response.params.dtlsParameters,
+              sctpParameters: response.params.sctpParameters,
+            });
+            
+            // Handle transport events
+            transport.on("connect", ({ dtlsParameters }, callback, errback) => {
+              socketRef.current!.emit("connectWebRtcTransport", {
+                roomId: meetingId,
+                transportId: transport.id,
+                dtlsParameters,
+              }, (response: { success: boolean; error?: string }) => {
+                if (response.success) {
+                  callback();
+                } else {
+                  errback(new Error(response.error || "Unknown error"));
+                }
+              });
+            });
+            
+            transport.on("produce", async ({ kind, rtpParameters, appData }, callback, errback) => {
+              try {
+                socketRef.current!.emit("produce", {
+                  roomId: meetingId,
+                  transportId: transport.id,
+                  kind,
+                  rtpParameters,
+                  appData,
+                }, (response: { success: boolean; producerId?: string; error?: string }) => {
+                  if (response.success) {
+                    callback({ id: response.producerId });
+                  } else {
+                    errback(new Error(response.error || "Unknown error"));
+                  }
+                });
+              } catch (error) {
+                errback(error instanceof Error ? error : new Error(String(error)));
+              }
+            });
+            
+            setSendTransport(transport);
+            resolve(transport);
+          } catch (error) {
+            console.error("Error creating send transport:", error);
+            reject(error);
+          }
+        } else {
+          console.error("Failed to create send transport:", response.error);
+          reject(new Error(response.error || "Unknown error"));
         }
-      } else {
-        console.error("Failed to create send transport:", response.error);
-      }
+      });
     });
   };
-
+  
   // Create a WebRTC transport for receiving media
-  const createReceiveTransport = async () => {
-    if (!socketRef.current || !meetingId) return;
+  const createRecvTransport = async () => {
+    if (!socketRef.current || !meetingId || !device) return null;
     
-    socketRef.current.emit("createWebRtcTransport", { roomId: meetingId, consuming: true }, async (response: any) => {
-      if (response.success) {
-        const transport = device!.createRecvTransport(response.params);
-        
-        // Set up transport event listeners
-        transport.on("connect", ({ dtlsParameters }, callback, errback) => {
-          socketRef.current!.emit("connectWebRtcTransport", {
-            roomId: meetingId,
-            transportId: transport.id,
-            dtlsParameters,
-          }, (response: any) => {
-            if (response.success) {
-              callback();
-            } else {
-              errback(new Error(response.error));
-            }
-          });
-        });
-        
-        setRecvTransport(transport);
-      } else {
-        console.error("Failed to create receive transport:", response.error);
-      }
+    console.log("Creating receive transport");
+    
+    return new Promise<mediasoupClient.types.Transport>((resolve, reject) => {
+      socketRef.current!.emit("createWebRtcTransport", {
+        roomId: meetingId,
+        consuming: true,
+      }, async (response: { success: boolean; params?: any; error?: string }) => {
+        if (response.success) {
+          try {
+            // Create the transport
+            const transport = device!.createRecvTransport({
+              id: response.params.id,
+              iceParameters: response.params.iceParameters,
+              iceCandidates: response.params.iceCandidates,
+              dtlsParameters: response.params.dtlsParameters,
+              sctpParameters: response.params.sctpParameters,
+            });
+            
+            // Handle transport events
+            transport.on("connect", ({ dtlsParameters }, callback, errback) => {
+              socketRef.current!.emit("connectWebRtcTransport", {
+                roomId: meetingId,
+                transportId: transport.id,
+                dtlsParameters,
+              }, (response: { success: boolean; error?: string }) => {
+                if (response.success) {
+                  callback();
+                } else {
+                  errback(new Error(response.error || "Unknown error"));
+                }
+              });
+            });
+            
+            setRecvTransport(transport);
+            resolve(transport);
+          } catch (error) {
+            console.error("Error creating receive transport:", error);
+            reject(error);
+          }
+        } else {
+          console.error("Failed to create receive transport:", response.error);
+          reject(new Error(response.error || "Unknown error"));
+        }
+      });
     });
   };
 
@@ -551,8 +619,28 @@ const Meeting: React.FC<MeetingProps> = () => {
     e.preventDefault();
     if (!newMessage.trim() || !socketRef.current) return;
     
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    
+    // Add message to local state immediately for better UX
+    const messageData: Message = {
+      sender: userName,
+      message: newMessage,
+      time: time,
+      fromMe: true
+    };
+    
+    setMessages(prevMessages => [...prevMessages, messageData]);
+    
+    // Send to server
     socketRef.current.emit("send-message", newMessage);
     setNewMessage("");
+    
+    // Scroll to bottom
+    if (chatContainerRef.current) {
+      setTimeout(() => {
+        chatContainerRef.current!.scrollTop = chatContainerRef.current!.scrollHeight;
+      }, 0);
+    }
   };
 
   // Admit a participant from the waiting room
@@ -574,23 +662,27 @@ const Meeting: React.FC<MeetingProps> = () => {
   };
 
   // Handle name submission
-  const handleNameSubmit = async (e: React.FormEvent) => {
+  const handleNameSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!userName.trim()) return;
     
     setIsNameSubmitted(true);
     
     // Initialize user media
-    const stream = await initializeUserMedia();
-    
-    if (stream) {
-      // Create a new room or join an existing one
-      if (window.location.pathname.includes("/new/")) {
-        createRoom();
-      } else {
-        joinRoom();
+    initializeUserMedia().then(() => {
+      // Check if the meeting exists
+      if (socketRef.current) {
+        socketRef.current.emit("checkRoom", { roomId: meetingId }, (response: any) => {
+          if (response.exists) {
+            // Join existing room
+            joinRoom();
+          } else {
+            // Create new room as host
+            createRoom();
+          }
+        });
       }
-    }
+    });
   };
 
   // Render participant video

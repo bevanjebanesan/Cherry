@@ -76,11 +76,11 @@ const peers = new Map(); // socketId => Peer
 
 // Room class to manage a meeting room
 class Room {
-  constructor(roomId) {
+  constructor(roomId, router, hostId) {
     this.id = roomId;
-    this.router = null;
+    this.router = router;
     this.peers = new Map(); // socketId => Peer
-    this.hostId = null; // Socket ID of the room host
+    this.hostId = hostId; // Socket ID of the room host
     this.waitingRoom = new Map(); // socketId => { name, socket }
   }
 
@@ -155,7 +155,7 @@ class Peer {
     if (!producer) throw new Error(`Producer not found: ${producerId}`);
 
     // Get the router's RTP capabilities
-    const router = rooms.get(this.roomId).router;
+    const router = rooms.get(this.socket.roomId).router;
     if (!router) throw new Error('Router not found');
 
     // Check if the client can consume the producer
@@ -232,7 +232,7 @@ async function initializeMediaServer() {
 }
 
 // Create a router for a room
-async function createRouter(roomId) {
+async function createRouter() {
   if (!worker) {
     await initializeMediaServer();
   }
@@ -241,17 +241,6 @@ async function createRouter(roomId) {
     const router = await worker.createRouter({
       mediaCodecs: config.mediasoup.router.mediaCodecs,
     });
-
-    // Create a new room if it doesn't exist
-    if (!rooms.has(roomId)) {
-      const room = new Room(roomId);
-      room.router = router;
-      rooms.set(roomId, room);
-    } else {
-      // Update the router for the existing room
-      const room = rooms.get(roomId);
-      room.router = router;
-    }
 
     return router;
   } catch (error) {
@@ -310,79 +299,147 @@ async function createWebRtcTransport(roomId, socketId, consuming = false) {
 
 // Handle socket connection for media server
 function handleSocketConnection(socket, io) {
+  console.log(`MediaServer: Socket connected: ${socket.id}`);
+
+  // Handle chat messages
+  socket.on("send-message", (message) => {
+    if (!socket.roomId) {
+      console.log("Socket tried to send message without being in a room");
+      return;
+    }
+
+    const room = rooms.get(socket.roomId);
+    if (!room) {
+      console.log(`Room not found for message: ${socket.roomId}`);
+      return;
+    }
+
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    
+    // Send message to all clients in the room
+    io.to(socket.roomId).emit("receive-message", {
+      sender: socket.name,
+      message: message,
+      time: time,
+      fromMe: false
+    });
+
+    console.log(`Message sent in room ${socket.roomId} by ${socket.name}: ${message}`);
+  });
+
+  // Check if a room exists
+  socket.on("checkRoom", ({ roomId }, callback) => {
+    console.log(`Checking if room exists: ${roomId}`);
+    const exists = rooms.has(roomId);
+    callback({ exists });
+  });
+
   // Socket event handlers for media server
   socket.on('createRoom', async ({ roomId, name }, callback) => {
     try {
-      let room = rooms.get(roomId);
+      console.log(`Creating room: ${roomId} by ${name}`);
       
-      // Create a new room if it doesn't exist
-      if (!room) {
-        const router = await createRouter(roomId);
-        room = rooms.get(roomId);
-        room.setHost(socket.id);
+      // Check if room already exists
+      if (rooms.has(roomId)) {
+        return callback({
+          success: false,
+          error: 'Room already exists'
+        });
       }
       
-      // Create a new peer
+      // Create a new mediasoup router
+      const router = await createRouter();
+      
+      // Create a new room
+      const room = new Room(roomId, router, socket.id);
+      rooms.set(roomId, room);
+      
+      // Add the peer to the room
       const peer = new Peer(socket.id, name, socket);
-      peers.set(socket.id, peer);
       room.addPeer(socket.id, peer);
       
-      // Return router RTP capabilities
+      // Store room and name in socket object for easy access
+      socket.roomId = roomId;
+      socket.name = name;
+      
+      // Join the socket.io room
+      socket.join(roomId);
+      
+      console.log(`Room created: ${roomId} by ${name} (${socket.id})`);
+      
       callback({
         success: true,
-        routerRtpCapabilities: room.router.rtpCapabilities,
+        routerRtpCapabilities: router.rtpCapabilities
       });
     } catch (error) {
       console.error('Error creating room:', error);
-      callback({ success: false, error: error.message });
+      callback({
+        success: false,
+        error: error.message
+      });
     }
   });
-
+  
   socket.on('joinRoom', async ({ roomId, name }, callback) => {
     try {
-      const room = rooms.get(roomId);
-      if (!room) {
-        return callback({ success: false, error: 'Room not found' });
+      console.log(`Joining room: ${roomId} by ${name}`);
+      
+      // Check if room exists
+      if (!rooms.has(roomId)) {
+        return callback({
+          success: false,
+          error: 'Room does not exist'
+        });
       }
       
-      // Check if waiting room is enabled and user is not the host
-      if (room.hostId && room.hostId !== socket.id) {
-        // Add to waiting room
+      const room = rooms.get(roomId);
+      
+      // Store room and name in socket object for easy access
+      socket.roomId = roomId;
+      socket.name = name;
+      
+      // Check if there's a host
+      if (room.hostId) {
+        // If there's a host, add to waiting room
+        console.log(`Adding ${name} to waiting room for ${roomId}`);
         room.addToWaitingRoom(socket.id, name, socket);
         
-        // Notify host about new participant in waiting room
-        const host = room.getPeer(room.hostId);
-        if (host) {
-          host.socket.emit('waitingRoomUpdated', {
-            participants: room.getWaitingRoomParticipants(),
-          });
+        // Notify host about new waiting room participant
+        const hostSocket = room.getPeer(room.hostId)?.socket;
+        if (hostSocket) {
+          hostSocket.emit('waitingRoomUpdated', room.getWaitingRoomParticipants());
         }
         
         return callback({
           success: true,
-          inWaitingRoom: true,
+          inWaitingRoom: true
+        });
+      } else {
+        // If no host, make this peer the host
+        room.hostId = socket.id;
+        
+        // Add the peer to the room
+        const peer = new Peer(socket.id, name, socket);
+        room.addPeer(socket.id, peer);
+        
+        // Join the socket.io room
+        socket.join(roomId);
+        
+        console.log(`${name} joined room ${roomId} as host`);
+        
+        return callback({
+          success: true,
+          inWaitingRoom: false,
+          isHost: true,
+          routerRtpCapabilities: room.router.rtpCapabilities
         });
       }
-      
-      // Create a new peer
-      const peer = new Peer(socket.id, name, socket);
-      peers.set(socket.id, peer);
-      room.addPeer(socket.id, peer);
-      
-      // Return router RTP capabilities
-      callback({
-        success: true,
-        routerRtpCapabilities: room.router.rtpCapabilities,
-      });
-      
-      // Notify others about the new participant
-      socket.to(roomId).emit('participantJoined', {
-        id: socket.id,
-        name: name,
-      });
     } catch (error) {
       console.error('Error joining room:', error);
-      callback({ success: false, error: error.message });
+      callback({
+        success: false,
+        error: error.message
+      });
     }
   });
 
