@@ -42,6 +42,7 @@ const Meeting = () => {
   const userVideo = useRef<HTMLVideoElement | null>(null);
   const screenTrackRef = useRef<MediaStreamTrack | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const peerVideoRefs = useRef<{ [key: string]: HTMLVideoElement | null }>({});
 
   // Set up socket connection and getUserMedia
   useEffect(() => {
@@ -117,16 +118,21 @@ const Meeting = () => {
         
         // Join the room
         const userId = socketRef.current.id;
+        console.log(`Joining room ${meetingId} as ${name} with ID ${userId}`);
         socketRef.current.emit('join-room', meetingId, userId, name);
         
         // Handle existing users in the room
         socketRef.current.on('all-users', (users: Array<{id: string, name: string}>) => {
           console.log('Received all users:', users);
           
+          // Clear existing peers first to prevent duplicates
+          peersRef.current = [];
+          
           // Create a peer connection for each existing user
           const peers: PeerConnection[] = [];
           users.forEach(user => {
-            if (socketRef.current) {
+            if (socketRef.current && user.id !== userId) { // Make sure we don't connect to ourselves
+              console.log(`Creating peer for existing user ${user.name} (${user.id})`);
               const peer = createPeer(user.id, socketRef.current.id, currentStream, name);
               peersRef.current.push({
                 peerID: user.id,
@@ -148,8 +154,16 @@ const Meeting = () => {
         socketRef.current.on('user-joined', (payload: {id: string, name: string, signal?: any}) => {
           console.log('User joined:', payload);
           
+          // Check if we already have this peer
+          const existingPeer = peersRef.current.find(p => p.peerID === payload.id);
+          if (existingPeer) {
+            console.log(`Already have peer ${payload.name} (${payload.id}), not creating duplicate`);
+            return;
+          }
+          
           // If this user is sending us a signal, create a peer to receive it
           if (payload.signal) {
+            console.log(`Creating peer for new user ${payload.name} (${payload.id}) with signal`);
             const peer = addPeer(payload.signal, payload.id, currentStream, payload.name);
             peersRef.current.push({
               peerID: payload.id,
@@ -157,7 +171,7 @@ const Meeting = () => {
               name: payload.name
             });
             
-            setPeers(prev => [...prev, {
+            setPeers(prev => [...prev.filter(p => p.peerID !== payload.id), {
               peerID: payload.id,
               peer,
               name: payload.name
@@ -174,6 +188,7 @@ const Meeting = () => {
           console.log('Received returned signal:', payload);
           const item = peersRef.current.find(p => p.peerID === payload.id);
           if (item) {
+            console.log(`Applying returned signal from ${payload.name || 'unknown'} (${payload.id})`);
             item.peer.signal(payload.signal);
             // Update the peer's name if it's provided
             if (payload.name && item.name !== payload.name) {
@@ -186,6 +201,8 @@ const Meeting = () => {
                 )
               );
             }
+          } else {
+            console.warn(`Received signal from unknown peer ${payload.id}`);
           }
         });
         
@@ -270,6 +287,7 @@ const Meeting = () => {
     
     peer.on('signal', signal => {
       if (socketRef.current) {
+        console.log(`Sending signal to ${userToSignal}`);
         socketRef.current.emit('sending-signal', { 
           userToSignal, 
           callerID, 
@@ -281,6 +299,10 @@ const Meeting = () => {
 
     peer.on('error', (err) => {
       console.error('Peer connection error:', err);
+    });
+    
+    peer.on('connect', () => {
+      console.log(`Connected to peer ${userToSignal}`);
     });
     
     return peer;
@@ -318,12 +340,17 @@ const Meeting = () => {
     
     peer.on('signal', signal => {
       if (socketRef.current) {
+        console.log(`Returning signal to ${callerID}`);
         socketRef.current.emit('returning-signal', { signal, callerID });
       }
     });
 
     peer.on('error', (err) => {
       console.error('Peer connection error:', err);
+    });
+    
+    peer.on('connect', () => {
+      console.log(`Connected to peer ${callerID}`);
     });
     
     peer.signal(incomingSignal);
@@ -334,6 +361,9 @@ const Meeting = () => {
   // Function to set video ref for a peer
   const setPeerVideoRef = (video: HTMLVideoElement | null, peer: PeerConnection) => {
     if (!video) return;
+    
+    // Store the video element reference
+    peerVideoRefs.current[peer.peerID] = video;
     
     if (peer && peer.peer) {
       console.log(`Setting video ref for peer ${peer.name} (${peer.peerID})`);
@@ -346,19 +376,32 @@ const Meeting = () => {
         console.log(`Received stream from peer ${peer.name} (${peer.peerID})`);
         
         // Ensure video element exists and set its srcObject
-        if (video) {
-          video.srcObject = stream;
+        const videoElement = peerVideoRefs.current[peer.peerID];
+        if (videoElement) {
+          console.log(`Setting stream to video element for ${peer.name}`);
+          videoElement.srcObject = stream;
           
           // Ensure video plays
-          video.onloadedmetadata = () => {
+          videoElement.onloadedmetadata = () => {
             console.log(`Video metadata loaded for peer ${peer.name}`);
-            video.play().catch(err => {
+            videoElement.play().catch(err => {
               console.error(`Error playing video for peer ${peer.name}:`, err);
             });
           };
+        } else {
+          console.error(`Video element for peer ${peer.peerID} not found`);
         }
       });
     }
+  };
+
+  // Function to send a message
+  const sendMessage = () => {
+    if (!socketRef.current || !messageInput.trim()) return;
+    
+    console.log(`Sending message: ${messageInput}`);
+    socketRef.current.emit('send-message', messageInput);
+    setMessageInput('');
   };
 
   return (
@@ -558,18 +601,14 @@ const Meeting = () => {
               onChange={(e) => setMessageInput(e.target.value)}
               onKeyPress={(e) => {
                 if (e.key === 'Enter') {
-                  socketRef.current?.emit('send-message', messageInput);
-                  setMessageInput('');
+                  sendMessage();
                 }
               }}
             />
             <Button 
               variant="contained" 
               color="primary" 
-              onClick={() => {
-                socketRef.current?.emit('send-message', messageInput);
-                setMessageInput('');
-              }}
+              onClick={sendMessage}
               disabled={!messageInput.trim()}
             >
               Send

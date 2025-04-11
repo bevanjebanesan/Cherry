@@ -73,7 +73,11 @@ io.on("connection", (socket) => {
       if (!meetings[meetingId]) {
         meetings[meetingId] = { users: [] };
       }
-      meetings[meetingId].users.push(socket.id);
+      
+      // Check if user is already in the room to prevent duplicates
+      if (!meetings[meetingId].users.includes(socket.id)) {
+        meetings[meetingId].users.push(socket.id);
+      }
       userNames[socket.id] = userName;
       
       // Get all users in the room
@@ -83,7 +87,7 @@ io.on("connection", (socket) => {
       socketsInRoom.forEach((s) => {
         if (s.id !== socket.id) {
           roomUsers.push({
-            id: s.userId,
+            id: s.id, // Use socket.id directly for consistency
             name: s.userName
           });
         }
@@ -93,7 +97,7 @@ io.on("connection", (socket) => {
       socket.emit("all-users", roomUsers);
       
       // Notify everyone else that a new user joined
-      socket.to(meetingId).emit("user-joined", { id: userId, name: userName });
+      socket.to(meetingId).emit("user-joined", { id: socket.id, name: userName });
       
       // Update participant count
       io.to(meetingId).emit("participant-count", socketsInRoom.length);
@@ -105,7 +109,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("sending-signal", ({ userToSignal, signal, callerID, callerName }) => {
+  socket.on("sending-signal", ({ userToSignal, callerID, signal, callerName }) => {
     try {
       console.log(`Sending signal from ${callerName} (${callerID}) to ${userToSignal}`);
       io.to(userToSignal).emit("user-joined", { signal, id: callerID, name: callerName });
@@ -117,10 +121,10 @@ io.on("connection", (socket) => {
 
   socket.on("returning-signal", ({ signal, callerID }) => {
     try {
-      console.log(`Returning signal to ${callerID}`);
+      console.log(`Returning signal from ${socket.id} to ${callerID}`);
       io.to(callerID).emit("receiving-returned-signal", {
         signal,
-        id: socket.userId,
+        id: socket.id,
         name: socket.userName
       });
     } catch (error) {
@@ -129,14 +133,28 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("send-message", (data) => {
+  socket.on("send-message", (message) => {
     try {
-      console.log(`Message from ${data.sender} in room ${data.roomID}: ${data.message}`);
-      socket.to(data.roomID).emit("receive-message", {
-        message: data.message,
-        sender: data.sender,
-        time: data.time,
-        fromMe: false
+      if (!socket.meetingId) {
+        console.error("User not in a meeting, cannot send message");
+        return;
+      }
+      
+      const messageData = {
+        sender: socket.userName || "Anonymous",
+        message,
+        time: new Date().toLocaleTimeString()
+      };
+      
+      console.log(`Message from ${messageData.sender} in room ${socket.meetingId}: ${message}`);
+      
+      // Send to everyone in the room except the sender
+      socket.to(socket.meetingId).emit("receive-message", messageData);
+      
+      // Send back to the sender with fromMe flag
+      socket.emit("receive-message", {
+        ...messageData,
+        fromMe: true
       });
     } catch (error) {
       console.error("Error in send-message event:", error);
@@ -146,29 +164,33 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", async () => {
     try {
-      const meetingId = socket.meetingId;
-      const userId = socket.userId;
-      const userName = socket.userName;
+      console.log(`User disconnected: ${socket.id}`);
       
-      if (meetingId) {
-        console.log(`User ${userName} (${userId}) left room ${meetingId}`);
+      if (socket.meetingId) {
+        const meetingId = socket.meetingId;
         
-        // Notify everyone that a user left
-        socket.to(meetingId).emit("user-left", userId);
+        // Remove from meetings store
+        if (meetings[meetingId]) {
+          meetings[meetingId].users = meetings[meetingId].users.filter(id => id !== socket.id);
+          
+          // Clean up empty meetings
+          if (meetings[meetingId].users.length === 0) {
+            delete meetings[meetingId];
+          }
+        }
+        
+        // Notify others in the room
+        socket.to(meetingId).emit("user-left", socket.id);
         
         // Update participant count
         const socketsInRoom = await io.in(meetingId).fetchSockets();
         io.to(meetingId).emit("participant-count", socketsInRoom.length);
-        
-        // Remove user from meetings store
-        meetings[meetingId].users = meetings[meetingId].users.filter((id) => id !== socket.id);
-        delete userNames[socket.id];
-      } else {
-        console.log(`User disconnected: ${socket.id}`);
       }
+      
+      // Clean up user name
+      delete userNames[socket.id];
     } catch (error) {
-      console.error("Error in disconnect event:", error);
-      socket.emit("error", { message: "Failed to disconnect. Please try again." });
+      console.error("Error handling disconnect:", error);
     }
   });
 });
